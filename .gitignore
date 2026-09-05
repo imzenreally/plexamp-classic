@@ -1,0 +1,16 @@
+node_modules/
+.env
+dist/
+
+# Webamp build artifacts — rebuild from a webamp checkout (packages/webamp/built/)
+# or copy from a release. See README.
+vendor/webamp.bundle.min.js
+vendor/webamp.butterchurn-bundle.min.mjs
+vendor/webamp.css
+
+# Optional local presets derived from the 2024 Winamp source release.
+# These stay local because that source release was withdrawn and its
+# redistribution terms are unsuitable for a public repository.
+vendor/presets-converted/
+vendor/presets-converted-index.mjs
+vendor/presets-og-pack.mjs

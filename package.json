@@ -1,0 +1,49 @@
+{
+  "name": "plexamp-classic",
+  "version": "0.3.0",
+  "description": "Old-school Winamp-style macOS player with Plex library integration and federation",
+  "main": "main.js",
+  "type": "commonjs",
+  "scripts": {
+    "postinstall": "node scripts/prepare-vendor.js",
+    "start": "electron .",
+    "dist": "electron-builder --mac dir"
+  },
+  "devDependencies": {
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3",
+    "webamp": "^2.3.1"
+  },
+  "build": {
+    "appId": "dev.plexamp-classic.app",
+    "productName": "Plexamp Classic",
+    "extends": null,
+    "asar": true,
+    "files": [
+      "main.js",
+      "preload.js",
+      "player.js",
+      "player.html",
+      "library.js",
+      "library.html",
+      "butterchurn-loader.mjs",
+      "auth.js",
+      "vendor/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dir"
+        },
+        {
+          "target": "dmg"
+        }
+      ],
+      "category": "public.app-category.music",
+      "icon": "build/icon.icns",
+      "identity": null,
+      "darkModeSupport": true
+    }
+  }
+}
