@@ -4,6 +4,7 @@ const path = require("path");
 const { pathToFileURL } = require("url");
 const auth = require("./auth");
 const { DEFAULT_SESSION, normalizeSession, repairedBounds } = require("./session-state");
+const { normalizeRelatedReleaseGroups } = require("./search-tree");
 
 // Web Audio must be allowed without a user gesture (headless/VNC use, autoplay)
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
@@ -350,12 +351,18 @@ ipcMain.handle("plex:artists", async (_e, server, sectionKey) => {
 });
 
 ipcMain.handle("plex:albums", async (_e, server, ratingKey) => {
-  const d = await plex(server, `/library/metadata/${ratingKey}/children`);
+  const d = await plex(server, `/library/metadata/${encodeURIComponent(ratingKey)}/children`);
   return (d.MediaContainer.Metadata || []).map((x) => ({
     title: x.title,
     year: x.year || "",
     ratingKey: x.ratingKey,
+    artist: x.parentTitle || "",
   }));
+});
+
+ipcMain.handle("plex:relatedReleases", async (_e, server, ratingKey) => {
+  const d = await plex(server, `/library/metadata/${encodeURIComponent(ratingKey)}/related`);
+  return normalizeRelatedReleaseGroups(d.MediaContainer.Hub || []);
 });
 
 // Plex's section /search endpoint is not available on every server version.

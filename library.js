@@ -215,36 +215,120 @@ function makeEntry(item, type, activate) {
   return button;
 }
 
-function renderSearchResults(results, query) {
+let searchTree = [];
+let expandedTreeNodes = new Set();
+
+function treeNodeById(id, nodes = searchTree) {
+  for (const node of nodes) {
+    if (node.id === id) return node;
+    if (Array.isArray(node.children)) {
+      const found = treeNodeById(id, node.children);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function treeParentId(id, nodes = searchTree, parentId = null) {
+  for (const node of nodes) {
+    if (node.id === id) return parentId;
+    if (Array.isArray(node.children)) {
+      const found = treeParentId(id, node.children, node.id);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
+function treeMeta(node) {
+  if (node.kind === "artist") return node.loading ? "Loading discography…" : "Artist · expand for discography";
+  if (node.kind === "other") return `${node.children.length} global match${node.children.length === 1 ? "" : "es"}`;
+  if (node.kind === "category") return `${node.children.length} release${node.children.length === 1 ? "" : "s"}`;
+  if (node.kind === "album") return [node.item.artist, node.item.year].filter(Boolean).join(" · ") || "Queue full album";
+  return [node.item.artist, node.item.album, duration(node.item.duration)].filter(Boolean).join(" · ");
+}
+
+function renderSearchTree(focusId = null) {
   const content = $("content");
   content.innerHTML = "";
-  const sections = [
-    ["ARTISTS", results.artists, (item) => selectArtist(item), "artist"],
-    ["ALBUMS", results.albums, (item) => queueAlbum(item), "album"],
-    ["TRACKS", results.tracks, (item) => queueTrack(item), "track"],
-  ];
-  const total = sections.reduce((sum, [, items]) => sum + items.length, 0);
-  $("view-title").textContent = "SEARCH RESULTS";
-  $("view-meta").textContent = total ? `“${query}” · ${total} result${total === 1 ? "" : "s"}` : `“${query}”`;
-  if (!total) {
-    content.innerHTML = `<div class="empty">No artists, albums, or tracks found for “${escapeHtml(query)}”.</div>`;
-    return;
+  const tree = document.createElement("div");
+  tree.className = "search-tree";
+  const rows = window.SearchTree.visibleRows(searchTree, expandedTreeNodes);
+  for (const { node, depth } of rows) {
+    const branch = node.kind === "artist" || node.kind === "other" || node.kind === "category";
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `tree-row tree-${node.kind}${depth === 0 && node.kind === "artist" ? " tree-root" : ""}`;
+    row.dataset.nav = "tree";
+    row.dataset.treeId = node.id;
+    row.style.paddingLeft = `${8 + depth * 20}px`;
+    row.title = node.title;
+    const twist = document.createElement("span");
+    twist.className = "tree-twist";
+    twist.textContent = branch ? (expandedTreeNodes.has(node.id) ? "▾" : "▸") : "•";
+    const main = document.createElement("span");
+    main.className = "tree-main";
+    const title = document.createElement("span");
+    title.className = "tree-title";
+    title.textContent = node.title;
+    const meta = document.createElement("span");
+    meta.className = "tree-meta";
+    meta.textContent = treeMeta(node);
+    main.append(title, meta);
+    row.append(twist, main);
+    row.onclick = () => activateTreeNode(node, row);
+    tree.appendChild(row);
   }
-  for (const [title, items, activate, type] of sections) {
-    if (!items.length) continue;
-    const section = document.createElement("section");
-    section.className = "section";
-    section.innerHTML = `<div class="section-head"><span>${title}</span><span class="section-count">${items.length}</span></div>`;
-    const grid = document.createElement("div");
-    grid.className = "entry-grid";
-    for (const item of items) grid.appendChild(makeEntry(item, type, () => activate(item)));
-    section.appendChild(grid);
-    content.appendChild(section);
-  }
+  content.appendChild(tree);
   const guide = document.createElement("div");
   guide.className = "search-guide inset";
-  guide.innerHTML = "<b>SEARCH COMMANDS</b><span>SCOPE: current Plex music library</span><span>ARTIST: discography</span><span>ALBUM: full playlist</span><span>TRACK: single song</span>";
+  guide.innerHTML = "<b>TREE CONTROLS</b><span>↑↓ SELECT</span><span>←→ COLLAPSE / EXPAND</span><span>ENTER PLAY / OPEN</span><span>ARTIST: DIRECT PLEX DISCOGRAPHY</span>";
   content.appendChild(guide);
+  if (focusId) content.querySelector(`[data-tree-id="${CSS.escape(focusId)}"]`)?.focus();
+}
+
+async function activateTreeNode(node, row) {
+  if (node.kind === "album") return queueAlbum(node.item);
+  if (node.kind === "track") return queueTrack(node.item);
+  if (window.SearchTree.isDiscographyLoading(node)) return;
+  if (window.SearchTree.shouldLoadDiscography(node)) {
+    node.loading = true;
+    renderSearchTree(node.id);
+    const treeAtStart = searchTree;
+    try {
+      const [albums, relatedGroups] = await Promise.all([
+        window.plex.albums(server, node.item.ratingKey),
+        window.plex.relatedReleases(server, node.item.ratingKey),
+      ]);
+      if (treeAtStart !== searchTree || $("search").value.trim() === "") return;
+      node.children = window.SearchTree.mergeDiscography(albums, relatedGroups);
+      node.loading = false;
+      expandedTreeNodes = window.SearchTree.toggleExpanded(expandedTreeNodes, node.id);
+      const releaseCount = node.children.reduce((count, group) => count + group.children.length, 0);
+      setStatus(`ARTIST READY · ${node.title} · ${releaseCount} Plex release${releaseCount === 1 ? "" : "s"}`);
+    } catch (error) {
+      node.children = [];
+      node.loading = false;
+      setStatus(`ARTIST ERROR · ${node.title} · ${error.message}`);
+    }
+    renderSearchTree(node.id);
+    return;
+  }
+  expandedTreeNodes = window.SearchTree.toggleExpanded(expandedTreeNodes, node.id);
+  renderSearchTree(node.id);
+}
+
+function renderSearchResults(results, query) {
+  const total = results.artists.length + results.albums.length + results.tracks.length;
+  $("view-title").textContent = "ARTIST-FIRST SEARCH";
+  $("view-meta").textContent = total ? `“${query}” · ${total} global match${total === 1 ? "" : "es"}` : `“${query}”`;
+  if (!total) {
+    $("content").innerHTML = `<div class="empty">No artists, albums, or tracks found for “${escapeHtml(query)}”.</div>`;
+    return;
+  }
+  searchTree = window.SearchTree.buildSearchTree(results);
+  expandedTreeNodes = new Set(searchTree.filter((node) => node.kind === "other").map((node) => node.id));
+  renderSearchTree();
 }
 
 async function queueAlbum(album) {
@@ -328,16 +412,39 @@ function keyboardNavigate(event) {
     scheduleSearch();
     return;
   }
-  if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+  if (event.target === $("search")) return;
   const targets = [...document.querySelectorAll("[data-nav]")];
   if (!targets.length) return;
   const active = document.activeElement;
   const index = targets.indexOf(active);
-  const next = event.key === "ArrowDown"
-    ? Math.min(targets.length - 1, Math.max(0, index + 1))
-    : Math.max(0, index <= 0 ? 0 : index - 1);
-  event.preventDefault();
-  targets[next].focus();
+  if (["ArrowUp", "ArrowDown"].includes(event.key)) {
+    const next = event.key === "ArrowDown"
+      ? Math.min(targets.length - 1, Math.max(0, index + 1))
+      : Math.max(0, index <= 0 ? 0 : index - 1);
+    event.preventDefault();
+    targets[next].focus();
+    return;
+  }
+  const id = active?.dataset?.treeId;
+  const node = id && treeNodeById(id);
+  if (!node) return;
+  const isBranch = node.kind === "artist" || node.kind === "other" || node.kind === "category";
+  if (event.key === "Enter") {
+    event.preventDefault();
+    activateTreeNode(node, active);
+  } else if (event.key === "ArrowRight" && isBranch && !expandedTreeNodes.has(id)) {
+    event.preventDefault();
+    activateTreeNode(node, active);
+  } else if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    if (isBranch && expandedTreeNodes.has(id)) {
+      expandedTreeNodes = window.SearchTree.toggleExpanded(expandedTreeNodes, id);
+      renderSearchTree(id);
+    } else {
+      const parent = treeParentId(id);
+      if (parent) renderSearchTree(parent);
+    }
+  }
 }
 
 function escapeHtml(value) {

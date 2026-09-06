@@ -27,6 +27,7 @@
       "player.html",
       "library.js",
       "library.html",
+      "search-tree.js",
       "butterchurn-loader.mjs",
       "auth.js",
       "session-state.js",

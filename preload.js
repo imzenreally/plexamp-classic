@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("plex", {
   sections: (server) => ipcRenderer.invoke("plex:sections", server),
   artists: (server, sectionKey) => ipcRenderer.invoke("plex:artists", server, sectionKey),
   albums: (server, ratingKey) => ipcRenderer.invoke("plex:albums", server, ratingKey),
+  relatedReleases: (server, ratingKey) => ipcRenderer.invoke("plex:relatedReleases", server, ratingKey),
   search: (server, sectionKey, query) => ipcRenderer.invoke("plex:search", server, sectionKey, query),
   tracks: (server, ratingKey) => ipcRenderer.invoke("plex:tracks", server, ratingKey),
   track: (server, ratingKey) => ipcRenderer.invoke("plex:track", server, ratingKey),

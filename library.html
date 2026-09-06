@@ -64,6 +64,19 @@
   .section-head { display: flex; align-items: baseline; gap: 7px; padding: 0 1px 5px; color: #a8dfb4; font-size: 10px; font-weight: 800; letter-spacing: 1px; }
   .section-count { color: #74857a; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 400; }
   .entry-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(205px, 1fr)); gap: 6px; }
+  .search-tree { max-width: 900px; display: flex; flex-direction: column; gap: 2px; }
+  .tree-row { display: flex; align-items: center; min-width: 0; min-height: 31px; padding: 4px 8px; color: #cbd5ce; background: #0d1213; border: 1px solid transparent; border-left-color: #283638; cursor: pointer; text-align: left; }
+  .tree-row:hover { color: #f0fff2; background: #18231f; border-color: #486457; }
+  .tree-row:focus-visible { outline: 2px solid #73b9e9; outline-offset: -2px; z-index: 1; }
+  .tree-row.tree-root { color: #bcecc6; font-weight: 750; background: linear-gradient(90deg, #18251f, #101516); border-left-color: #8cca9d; }
+  .tree-row.tree-other { color: #e7c86c; border-left-color: #e7bd4e; }
+  .tree-row.tree-category { color: #a7d7ef; border-left-color: #7baeca; }
+  .tree-row.tree-album { border-left-color: #679dbc; }
+  .tree-row.tree-track { border-left-color: #c9984d; }
+  .tree-twist { flex: 0 0 18px; color: #8ba496; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .tree-main { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tree-title { font-weight: inherit; }
+  .tree-meta { margin-left: 9px; color: #84958b; font-size: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
   .entry { position: relative; display: block; min-width: 0; width: 100%; min-height: 56px; padding: 8px 9px 8px 14px; cursor: pointer; text-align: left; color: #d2d8d1; border: 1px solid #4a5559; border-top-color: #687277; border-bottom-color: #111416; border-radius: 1px; background: linear-gradient(135deg, #283034, #151a1c 58%, #101416); box-shadow: inset 0 1px #50595c; }
   .entry::before { content: attr(data-kind); position: absolute; left: 0; top: 0; bottom: 0; display: flex; align-items: center; width: 11px; color: #101715; background: #91d3a1; font-size: 8px; font-weight: 900; writing-mode: vertical-rl; transform: rotate(180deg); letter-spacing: .5px; }
   .entry.album::before { background: #8cc5e7; }
@@ -107,6 +120,7 @@
       <div id="status">Booting…</div>
     </main>
   </div>
+<script src="search-tree.js"></script>
 <script src="library.js"></script>
 </body>
 </html>
