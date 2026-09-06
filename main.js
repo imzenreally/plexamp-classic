@@ -286,33 +286,79 @@ ipcMain.handle("plex:albums", async (_e, server, ratingKey) => {
   }));
 });
 
+// Plex's section /search endpoint is not available on every server version.
+// Hubs search is the stable cross-server endpoint; sectionId scopes its useful
+// music results to the selected library while Plex may still return empty/non-
+// music hubs, which we deliberately discard.
+ipcMain.handle("plex:search", async (_e, server, sectionKey, rawQuery) => {
+  const query = String(rawQuery || "").trim();
+  if (!query) return { artists: [], albums: [], tracks: [] };
+  if (query.length > 160) throw new Error("Search query is too long");
+  const d = await plex(
+    server,
+    `/hubs/search?query=${encodeURIComponent(query)}&sectionId=${encodeURIComponent(sectionKey)}`
+  );
+  const out = { artists: [], albums: [], tracks: [] };
+  for (const hub of d.MediaContainer.Hub || []) {
+    const items = hub.Metadata || [];
+    if (hub.type === "artist") {
+      out.artists.push(...items.map((x) => ({
+        type: "artist", title: x.title, ratingKey: x.ratingKey,
+      })));
+    } else if (hub.type === "album") {
+      out.albums.push(...items.map((x) => ({
+        type: "album", title: x.title, artist: x.parentTitle || "",
+        year: x.year || "", ratingKey: x.ratingKey,
+      })));
+    } else if (hub.type === "track") {
+      out.tracks.push(...items.map((x) => ({
+        type: "track", title: x.title, artist: x.grandparentTitle || x.parentTitle || "",
+        album: x.parentTitle || "", duration: x.duration ? Math.round(x.duration / 1000) : 0,
+        ratingKey: x.ratingKey,
+      })));
+    }
+  }
+  // A compact result set is intentional: it keeps keyboard navigation and
+  // renderer work responsive even on large, federated libraries.
+  for (const key of Object.keys(out)) out[key] = out[key].slice(0, 24);
+  return out;
+});
+
 // ---------- stream proxy ----------
 // Renderer <audio> can't accept federated servers' self-signed TLS. So the
 // renderer requests streams via app-stream://<key> and the main process
 // fetches the real URL (TLS-tolerant) and pipes the bytes back.
 const streamCache = new Map(); // key -> { url, headers }
 
+function makeStreamTrack(server, x) {
+  if (!x) return null;
+  const part = x.Media?.[0]?.Part?.[0];
+  if (!part) return null;
+  const key = Math.random().toString(36).slice(2);
+  streamCache.set(key, {
+    url: `${server.baseUrl}${part.key}`,
+    headers: { "X-Plex-Token": server.token },
+  });
+  return {
+    title: x.title,
+    artist: x.grandparentTitle || x.parentTitle || "",
+    album: x.parentTitle || "",
+    duration: x.duration ? Math.round(x.duration / 1000) : 0,
+    url: `app-stream://${key}`,
+  };
+}
+
 ipcMain.handle("plex:tracks", async (_e, server, ratingKey) => {
   const d = await plex(server, `/library/metadata/${ratingKey}/children`);
-  return (d.MediaContainer.Metadata || []).map((x) => {
-    const part = x.Media?.[0]?.Part?.[0];
-    let url = null;
-    if (part) {
-      const key = Math.random().toString(36).slice(2);
-      streamCache.set(key, {
-        url: `${server.baseUrl}${part.key}`,
-        headers: { "X-Plex-Token": server.token },
-      });
-      url = `app-stream://${key}`;
-    }
-    return {
-      title: x.title,
-      artist: x.grandparentTitle || x.parentTitle || "",
-      album: x.parentTitle || "",
-      duration: x.duration ? Math.round(x.duration / 1000) : 0,
-      url,
-    };
-  }).filter((t) => t.url);
+  return (d.MediaContainer.Metadata || [])
+    .map((x) => makeStreamTrack(server, x))
+    .filter(Boolean);
+});
+
+ipcMain.handle("plex:track", async (_e, server, ratingKey) => {
+  const d = await plex(server, `/library/metadata/${ratingKey}`);
+  const track = makeStreamTrack(server, (d.MediaContainer.Metadata || [])[0]);
+  return track ? [track] : [];
 });
 
 // ---------- media keys ----------

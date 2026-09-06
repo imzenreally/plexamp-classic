@@ -13,7 +13,9 @@ contextBridge.exposeInMainWorld("plex", {
   sections: (server) => ipcRenderer.invoke("plex:sections", server),
   artists: (server, sectionKey) => ipcRenderer.invoke("plex:artists", server, sectionKey),
   albums: (server, ratingKey) => ipcRenderer.invoke("plex:albums", server, ratingKey),
+  search: (server, sectionKey, query) => ipcRenderer.invoke("plex:search", server, sectionKey, query),
   tracks: (server, ratingKey) => ipcRenderer.invoke("plex:tracks", server, ratingKey),
+  track: (server, ratingKey) => ipcRenderer.invoke("plex:track", server, ratingKey),
   // media keys (player window)
   registerMediaKeys: () => ipcRenderer.send("media:register", { play: true, pause: true, toggle: true }),
   onMediaKey: (cb) => ipcRenderer.on("media", (_e, action) => cb(action)),

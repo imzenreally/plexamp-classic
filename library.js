@@ -1,39 +1,33 @@
-/* library.js — the Media Library window.
- * Bootstraps server selection (env default or Plex login), browses artists/
- * albums, and sends albums to the player window via main-process relay.
- */
+/* Media Library: Plex browsing + compact, race-safe multi-entity search. */
 let server = null;
 let currentSection = null;
 let allArtists = [];
 let activeArtist = null;
-let activeAlbum = null;
+let searchTimer = null;
+let searchGeneration = 0;
 
 const $ = (id) => document.getElementById(id);
+const setStatus = (text) => { $("status").textContent = text; };
+const fold = (value) => String(value || "")
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .replace(/[‘’]/g, "'")
+  .toLowerCase();
+const duration = (seconds) => {
+  const n = Number(seconds) || 0;
+  return n ? `${Math.floor(n / 60)}:${String(n % 60).padStart(2, "0")}` : "";
+};
 
 async function boot() {
   const status = await window.plex.authStatus();
   renderLoginBar(status);
   const servers = await window.plex.servers();
-  const envDefault = servers.find(
-    (s) => s.source === "env" || s.source === "env+account"
-  );
+  const envDefault = servers.find((s) => s.source === "env" || s.source === "env+account");
   if (envDefault) {
     await selectServer(envDefault);
-    // Keep the picker available so the user can switch servers.
-    document.getElementById("changeserver").style.display = "inline-block";
   } else {
     renderServerList(servers, status);
   }
-}
-
-// re-open the server picker (all servers incl. shared/federated)
-async function changeServer() {
-  const servers = await window.plex.servers();
-  const status = await window.plex.authStatus();
-  document.getElementById("library").style.display = "none";
-  document.getElementById("changeserver").style.display = "none";
-  renderServerList(servers, status);
-  document.getElementById("servers").style.display = "flex";
 }
 
 function renderLoginBar(status) {
@@ -41,174 +35,325 @@ function renderLoginBar(status) {
   bar.innerHTML = "";
   const who = document.createElement("span");
   if (status.logged) {
-    who.textContent = `${status.user.name}`;
+    who.textContent = status.user.name;
     bar.appendChild(who);
     const out = document.createElement("button");
     out.textContent = "Log out";
-    out.onclick = async () => {
-      await window.plex.logout();
-      location.reload();
-    };
+    out.onclick = async () => { await window.plex.logout(); location.reload(); };
     bar.appendChild(out);
   } else {
-    who.textContent = "Log in with Plex for shared/federated servers";
+    who.textContent = "Log in with Plex for shared servers";
     bar.appendChild(who);
-    const btn = document.createElement("button");
-    btn.textContent = "Log in with Plex";
-    btn.onclick = beginLogin;
-    bar.appendChild(btn);
+    const login = document.createElement("button");
+    login.textContent = "Log in";
+    login.onclick = beginLogin;
+    bar.appendChild(login);
   }
 }
 
 async function beginLogin() {
   const { pinId, code } = await window.plex.beginLogin();
-  $("loginbar").querySelector("span").textContent =
-    `Approve in your browser (code ${code})…`;
+  $("loginbar").querySelector("span").textContent = `Approve Plex login: ${code}`;
   const timer = setInterval(async () => {
-    const r = await window.plex.poll(pinId);
-    if (r.ok) {
-      clearInterval(timer);
-      location.reload();
-    }
+    const result = await window.plex.poll(pinId);
+    if (result.ok) { clearInterval(timer); location.reload(); }
   }, 1500);
 }
 
-function renderServerList(servers, status) {
+function renderServerList(servers) {
   const box = $("servers");
   box.innerHTML = "";
   if (!servers.length) {
-    box.innerHTML = `<div class="empty">No servers found. Log in with Plex to discover yours (including shared/federated servers).</div>`;
+    box.innerHTML = `<div class="empty">No Plex servers found. Log in with Plex to discover owned and shared servers.</div>`;
     return;
   }
-  const cur = document.createElement("div");
-  cur.className = "empty";
-  cur.style.width = "100%";
-  cur.style.padding = "0 0 0 4px";
-  cur.textContent = "Pick a server:";
-  box.appendChild(cur);
-  for (const s of servers) {
-    const el = document.createElement("div");
-    el.className = "servercard";
-    const label =
-      s.source === "env" || s.source === "env+account"
-        ? `${s.name}`
-        : `${s.name} ${s.owned ? "(owned)" : "(shared)"}`;
-    el.innerHTML = `<div class="t"></div><div class="y"></div>`;
-    el.querySelector(".t").textContent = label;
-    el.querySelector(".y").textContent =
-      s.source === "env" || s.source === "env+account"
-        ? "LAN default from .env"
-        : "via Plex account";
-    el.onclick = () => selectServer(s);
-    box.appendChild(el);
+  for (const item of servers) {
+    const card = document.createElement("button");
+    card.className = "servercard chrome";
+    const title = item.source === "env" || item.source === "env+account"
+      ? item.name
+      : `${item.name} ${item.owned ? "(owned)" : "(shared)"}`;
+    card.innerHTML = `<div class="t"></div><div class="y"></div>`;
+    card.querySelector(".t").textContent = title;
+    card.querySelector(".y").textContent = item.source === "env" || item.source === "env+account"
+      ? "LAN default" : "Plex account connection";
+    card.onclick = () => selectServer(item);
+    box.appendChild(card);
   }
 }
 
-async function selectServer(s) {
-  $("status").textContent = `Connecting to ${s.name}…`;
-  let result;
+async function changeServer() {
+  searchGeneration += 1;
+  $("library").style.display = "none";
+  $("changeserver").style.display = "none";
+  const servers = await window.plex.servers();
+  renderServerList(servers);
+  $("servers").style.display = "flex";
+}
+
+async function selectServer(item) {
+  $("servers").innerHTML = `<div class="empty">Connecting to ${item.name}…</div>`;
   try {
-    result = await window.plex.selectServer(
-      s.source === "env" || s.source === "env+account"
+    const result = await window.plex.selectServer(
+      item.source === "env" || item.source === "env+account"
         ? { source: "env" }
-        : { source: "account", name: s.name, token: s.token, resource: s.resource }
+        : { source: "account", name: item.name, token: item.token, resource: item.resource }
     );
-  } catch (e) {
-    $("status").textContent = `Connection failed: ${e.message}`;
-    return;
-  }
-  server = result.server;
-  const sec = $("server");
-  sec.innerHTML = "";
-  for (const x of result.sections) {
-    const opt = document.createElement("option");
-    opt.value = x.key;
-    opt.textContent = `${s.name} — ${x.title}`;
-    sec.appendChild(opt);
-  }
-  $("servers").style.display = "none";
-  $("library").style.display = "flex";
-  sec.style.display = "inline-block";
-  document.getElementById("changeserver").style.display = "inline-block";
-  // prefer the section matching the .env PLEX_SECTION; else the first one
-  const envSection = await window.plex.getEnvSection?.();
-  const preferred =
-    result.sections.find((x) => x.key === envSection) || result.sections[0];
-  if (preferred) {
-    sec.value = preferred.key;
+    server = result.server;
+    const select = $("server");
+    select.innerHTML = "";
+    for (const section of result.sections) {
+      const option = document.createElement("option");
+      option.value = section.key;
+      option.textContent = `${item.name} — ${section.title}`;
+      select.appendChild(option);
+    }
+    $("servers").style.display = "none";
+    $("library").style.display = "flex";
+    $("changeserver").style.display = "inline-block";
+    select.style.display = "inline-block";
+    const preferredKey = await window.plex.getEnvSection?.();
+    const preferred = result.sections.find((x) => x.key === preferredKey) || result.sections[0];
+    if (!preferred) throw new Error("No music libraries are available on this server");
+    select.value = preferred.key;
     await loadArtists(preferred.key);
+    setStatus(`CONNECTED · ${item.name} · select an artist or search the music library`);
+  } catch (error) {
+    $("servers").innerHTML = `<div class="empty">Connection failed: ${escapeHtml(error.message)}</div>`;
   }
-  $("status").textContent = `Connected: ${s.name} — click an album to send it to Winamp`;
 }
 
 async function loadArtists(sectionKey) {
+  const generation = ++searchGeneration;
   currentSection = sectionKey;
-  $("artists").innerHTML = `<div class="empty">Loading artists…</div>`;
-  allArtists = await window.plex.artists(server, sectionKey);
-  renderArtists("");
-  $("status").textContent = `${allArtists.length} artists loaded.`;
-  $("albums").innerHTML = `<div class="empty">Select an artist.</div>`;
-  $("albums").className = "";
+  activeArtist = null;
+  $("view-title").textContent = "BROWSE ARTISTS";
+  $("view-meta").textContent = "Loading artist index…";
+  $("artists").innerHTML = `<div class="hint">Loading artists…</div>`;
+  $("content").innerHTML = `<div class="empty">Select an artist or search Plex music.</div>`;
+  try {
+    const artists = await window.plex.artists(server, sectionKey);
+    if (generation !== searchGeneration) return;
+    allArtists = artists.sort((a, b) => a.title.localeCompare(b.title));
+    renderArtists($("search").value);
+    $("view-meta").textContent = `${allArtists.length.toLocaleString()} artists`;
+    setStatus(`ARTIST INDEX READY · ${allArtists.length.toLocaleString()} artists · Cmd+F to search`);
+  } catch (error) {
+    if (generation !== searchGeneration) return;
+    $("artists").innerHTML = `<div class="hint">Could not load artists.</div>`;
+    setStatus(`ARTIST INDEX ERROR · ${error.message}`);
+  }
 }
 
-function renderArtists(filter) {
-  const list = filter
-    ? allArtists.filter((a) => a.title.toLowerCase().includes(filter))
-    : allArtists;
+function renderArtists(filter = "") {
+  const query = fold(filter.trim());
+  const matches = query ? allArtists.filter((artist) => fold(artist.title).includes(query)) : allArtists;
+  const visible = matches.slice(0, 250);
   const box = $("artists");
   box.innerHTML = "";
-  for (const a of list) {
-    const el = document.createElement("div");
-    el.className = "artist" + (activeArtist === a.ratingKey ? " active" : "");
-    el.textContent = a.title;
-    el.title = a.title;
-    el.onclick = () => selectArtist(a);
-    box.appendChild(el);
+  for (const artist of visible) {
+    const button = document.createElement("button");
+    button.className = `artist${activeArtist === artist.ratingKey ? " active" : ""}`;
+    button.textContent = artist.title;
+    button.title = artist.title;
+    button.dataset.nav = "artist";
+    button.onclick = () => selectArtist(artist);
+    box.appendChild(button);
+  }
+  if (!visible.length) box.innerHTML = `<div class="hint">No artists match this filter.</div>`;
+  if (matches.length > visible.length) {
+    const note = document.createElement("div");
+    note.className = "hint";
+    note.textContent = `Showing first ${visible.length} of ${matches.length}. Refine the search.`;
+    box.appendChild(note);
   }
 }
 
-async function selectArtist(a) {
-  activeArtist = a.ratingKey;
-  renderArtists($("search").value.toLowerCase());
-  $("albums").innerHTML = `<div class="empty">Loading…</div>`;
-  const albums = await window.plex.albums(server, a.ratingKey);
-  const box = $("albums");
-  box.className = "";
-  box.innerHTML = "";
+async function selectArtist(artist) {
+  activeArtist = artist.ratingKey;
+  renderArtists($("search").value);
+  $("view-title").textContent = "ARTIST DISCOGRAPHY";
+  $("view-meta").textContent = artist.title;
+  $("content").innerHTML = `<div class="empty">Loading albums for ${escapeHtml(artist.title)}…</div>`;
+  setStatus(`LOADING ARTIST · ${artist.title}`);
+  try {
+    const albums = await window.plex.albums(server, artist.ratingKey);
+    renderAlbums(albums, artist.title);
+    setStatus(`ARTIST READY · ${artist.title} · ${albums.length} album${albums.length === 1 ? "" : "s"}`);
+  } catch (error) {
+    $("content").innerHTML = `<div class="empty">Could not load albums for ${escapeHtml(artist.title)}.</div>`;
+    setStatus(`ARTIST ERROR · ${error.message}`);
+  }
+}
+
+function renderAlbums(albums, artistName) {
+  const content = $("content");
+  content.innerHTML = "";
   if (!albums.length) {
-    box.innerHTML = `<div class="empty">No albums found.</div>`;
+    content.innerHTML = `<div class="empty">No albums found for ${escapeHtml(artistName)}.</div>`;
     return;
   }
-  for (const alb of albums) {
-    const el = document.createElement("div");
-    el.className = "album" + (activeAlbum === alb.ratingKey ? " active" : "");
-    el.innerHTML = `<div class="t"></div><div class="y"></div><div class="hint">Click to enqueue</div>`;
-    el.querySelector(".t").textContent = alb.title;
-    el.querySelector(".y").textContent = alb.year ? String(alb.year) : "";
-    el.onclick = () => queueAlbum(alb, el);
-    box.appendChild(el);
+  const grid = document.createElement("div");
+  grid.className = "album-grid";
+  for (const album of albums) grid.appendChild(makeEntry(album, "album", () => queueAlbum(album)));
+  content.appendChild(grid);
+}
+
+function makeEntry(item, type, activate) {
+  const button = document.createElement("button");
+  button.className = `entry ${type}`;
+  button.dataset.kind = type.toUpperCase();
+  button.dataset.nav = type;
+  button.title = [item.title, item.artist, item.album].filter(Boolean).join(" — ");
+  const sub = type === "artist" ? "Open discography"
+    : type === "album" ? [item.artist, item.year].filter(Boolean).join(" · ") || "Play album"
+    : [item.artist, item.album, duration(item.duration)].filter(Boolean).join(" · ");
+  button.innerHTML = `<span class="entry-title"></span><span class="entry-sub"></span>`;
+  button.querySelector(".entry-title").textContent = item.title;
+  button.querySelector(".entry-sub").textContent = sub;
+  button.onclick = activate;
+  return button;
+}
+
+function renderSearchResults(results, query) {
+  const content = $("content");
+  content.innerHTML = "";
+  const sections = [
+    ["ARTISTS", results.artists, (item) => selectArtist(item), "artist"],
+    ["ALBUMS", results.albums, (item) => queueAlbum(item), "album"],
+    ["TRACKS", results.tracks, (item) => queueTrack(item), "track"],
+  ];
+  const total = sections.reduce((sum, [, items]) => sum + items.length, 0);
+  $("view-title").textContent = "SEARCH RESULTS";
+  $("view-meta").textContent = total ? `“${query}” · ${total} result${total === 1 ? "" : "s"}` : `“${query}”`;
+  if (!total) {
+    content.innerHTML = `<div class="empty">No artists, albums, or tracks found for “${escapeHtml(query)}”.</div>`;
+    return;
+  }
+  for (const [title, items, activate, type] of sections) {
+    if (!items.length) continue;
+    const section = document.createElement("section");
+    section.className = "section";
+    section.innerHTML = `<div class="section-head"><span>${title}</span><span class="section-count">${items.length}</span></div>`;
+    const grid = document.createElement("div");
+    grid.className = "entry-grid";
+    for (const item of items) grid.appendChild(makeEntry(item, type, () => activate(item)));
+    section.appendChild(grid);
+    content.appendChild(section);
+  }
+  const guide = document.createElement("div");
+  guide.className = "search-guide inset";
+  guide.innerHTML = "<b>SEARCH COMMANDS</b><span>SCOPE: current Plex music library</span><span>ARTIST: discography</span><span>ALBUM: full playlist</span><span>TRACK: single song</span>";
+  content.appendChild(guide);
+}
+
+async function queueAlbum(album) {
+  setStatus(`READING ALBUM · ${album.title}`);
+  try {
+    const tracks = await window.plex.tracks(server, album.ratingKey);
+    if (!tracks.length) throw new Error("Plex did not return playable tracks");
+    window.plex.enqueueTracks(tracks);
+    const minutes = Math.round(tracks.reduce((sum, track) => sum + track.duration, 0) / 60);
+    setStatus(`PLAYING ALBUM · ${album.title} · ${tracks.length} tracks · ${minutes} min → WINAMP`);
+  } catch (error) {
+    setStatus(`ALBUM ERROR · ${album.title} · ${error.message}`);
   }
 }
 
-async function queueAlbum(alb, el) {
-  const tracks = await window.plex.tracks(server, alb.ratingKey);
-  if (!tracks.length) return;
-  document
-    .querySelectorAll(".album.active")
-    .forEach((x) => x.classList.remove("active"));
-  el.classList.add("active");
-  activeAlbum = alb.ratingKey;
-  window.plex.enqueueTracks(tracks);
-  const mins = (tracks.reduce((s, t) => s + t.duration, 0) / 60).toFixed(0);
-  $("status").textContent = `▶ ${alb.title} — ${tracks.length} tracks, ${mins} min → sent to Winamp`;
+async function queueTrack(track) {
+  setStatus(`READING TRACK · ${track.title}`);
+  try {
+    const tracks = await window.plex.track(server, track.ratingKey);
+    if (!tracks.length) throw new Error("Plex did not return a playable track");
+    window.plex.enqueueTracks(tracks);
+    setStatus(`PLAYING TRACK · ${track.title}${track.artist ? ` · ${track.artist}` : ""} → WINAMP`);
+  } catch (error) {
+    setStatus(`TRACK ERROR · ${track.title} · ${error.message}`);
+  }
 }
 
-$("search").addEventListener("input", (e) =>
-  renderArtists(e.target.value.toLowerCase())
-);
-$("server").addEventListener("change", (e) => loadArtists(e.target.value));
-document
-  .getElementById("changeserver")
-  .addEventListener("click", changeServer);
+function scheduleSearch() {
+  const raw = $("search").value;
+  renderArtists(raw);
+  clearTimeout(searchTimer);
+  const generation = ++searchGeneration;
+  const query = raw.trim();
+  if (!query) {
+    $("view-title").textContent = activeArtist ? "ARTIST DISCOGRAPHY" : "BROWSE ARTISTS";
+    $("view-meta").textContent = activeArtist ? "" : `${allArtists.length.toLocaleString()} artists`;
+    if (!activeArtist) $("content").innerHTML = `<div class="empty">Select an artist or search Plex music.</div>`;
+    setStatus(`ARTIST INDEX · ${allArtists.length.toLocaleString()} artists · type to search Plex`);
+    return;
+  }
+  $("view-title").textContent = "SEARCHING PLEX";
+  $("view-meta").textContent = `“${query}”`;
+  $("content").innerHTML = `<div class="empty">Searching artists, albums, and tracks…</div>`;
+  setStatus(`SEARCHING · ${query}`);
+  searchTimer = setTimeout(async () => {
+    try {
+      const results = await window.plex.search(server, currentSection, query);
+      if (generation !== searchGeneration) return;
+      // Server search handles albums/tracks. Supplement artist results from the
+      // existing index so punctuation/diacritic-normalized artist matches stay useful.
+      const seen = new Set(results.artists.map((artist) => artist.ratingKey));
+      for (const artist of allArtists) {
+        if (fold(artist.title).includes(fold(query)) && !seen.has(artist.ratingKey)) {
+          results.artists.push({ ...artist, type: "artist" });
+          seen.add(artist.ratingKey);
+        }
+      }
+      results.artists = results.artists.slice(0, 24);
+      renderSearchResults(results, query);
+      const total = results.artists.length + results.albums.length + results.tracks.length;
+      setStatus(`SEARCH READY · ${total} result${total === 1 ? "" : "s"} · ↑↓ then Enter to activate`);
+    } catch (error) {
+      if (generation !== searchGeneration) return;
+      $("content").innerHTML = `<div class="empty">Search failed. Check the Plex connection and try again.</div>`;
+      $("view-title").textContent = "SEARCH ERROR";
+      setStatus(`SEARCH ERROR · ${error.message}`);
+    }
+  }, 250);
+}
+
+function keyboardNavigate(event) {
+  if (event.metaKey && event.key.toLowerCase() === "f") {
+    event.preventDefault();
+    $("search").focus();
+    $("search").select();
+    return;
+  }
+  if (event.key === "Escape" && $("search").value) {
+    event.preventDefault();
+    $("search").value = "";
+    scheduleSearch();
+    return;
+  }
+  if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+  const targets = [...document.querySelectorAll("[data-nav]")];
+  if (!targets.length) return;
+  const active = document.activeElement;
+  const index = targets.indexOf(active);
+  const next = event.key === "ArrowDown"
+    ? Math.min(targets.length - 1, Math.max(0, index + 1))
+    : Math.max(0, index <= 0 ? 0 : index - 1);
+  event.preventDefault();
+  targets[next].focus();
+}
+
+function escapeHtml(value) {
+  const div = document.createElement("div");
+  div.textContent = String(value || "");
+  return div.innerHTML;
+}
+
+$("search").addEventListener("input", scheduleSearch);
+$("clear-search").addEventListener("click", () => {
+  $("search").value = "";
+  $("search").focus();
+  scheduleSearch();
+});
+$("server").addEventListener("change", (event) => loadArtists(event.target.value));
+$("changeserver").addEventListener("click", changeServer);
+document.addEventListener("keydown", keyboardNavigate);
 
 boot();
