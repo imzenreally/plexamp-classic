@@ -6,6 +6,8 @@
  */
 let webamp = null;
 let pendingTracks = null;
+let panelStateSyncTimer = null;
+const PANEL_IDS = ["main", "playlist", "equalizer", "milkdrop"];
 const MODE = new URLSearchParams(location.search).get("mode") || "desktop";
 if (MODE === "windowed") document.body.classList.add("windowed");
 
@@ -74,6 +76,29 @@ function els_some(els, el) {
   return els.some((o) => o !== el && o.contains(el));
 }
 
+// ---------- Webamp panel session state ----------
+function currentPanelState() {
+  const windows = webamp?.store?.getState?.().windows?.genWindows || {};
+  return Object.fromEntries(PANEL_IDS.map((id) => [id, id === "main" ? true : Boolean(windows[id]?.open)]));
+}
+
+function restorePanelState(desired) {
+  const windows = webamp?.store?.getState?.().windows?.genWindows || {};
+  for (const id of PANEL_IDS) {
+    if (id === "main" || typeof desired?.[id] !== "boolean" || !windows[id]) continue;
+    if (Boolean(windows[id].open) !== desired[id]) {
+      webamp.store.dispatch({ type: "TOGGLE_WINDOW", windowId: id });
+    }
+  }
+}
+
+function schedulePanelStateSave() {
+  clearTimeout(panelStateSyncTimer);
+  panelStateSyncTimer = setTimeout(() => {
+    window.plex.updateSession({ panels: currentPanelState() });
+  }, 150);
+}
+
 // ---------- webamp ----------
 async function initWebamp() {
   const t0 = Date.now();
@@ -112,6 +137,9 @@ async function initWebamp() {
   webamp = new Ctor(opts);
   window.__webamp = webamp;
   await webamp.renderWhenReady(document.getElementById("webamp-slot"));
+  const savedSession = await window.plex.getSession();
+  restorePanelState(savedSession.panels);
+  webamp.store.subscribe(schedulePanelStateSave);
   if (MODE === "windowed") {
     // drag regions for the OS window + bounds sync
     const style = document.createElement("style");

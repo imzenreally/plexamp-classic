@@ -1,12 +1,13 @@
 {
   "name": "plexamp-classic",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Old-school Winamp-style macOS player with Plex library integration and federation",
   "main": "main.js",
   "type": "commonjs",
   "scripts": {
     "postinstall": "node scripts/prepare-vendor.js",
     "start": "electron .",
+    "test": "node --test",
     "dist": "electron-builder --mac dir"
   },
   "devDependencies": {
@@ -28,6 +29,7 @@
       "library.html",
       "butterchurn-loader.mjs",
       "auth.js",
+      "session-state.js",
       "vendor/**/*",
       "!vendor/presets-og-pack.mjs",
       "package.json"

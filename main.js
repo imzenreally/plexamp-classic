@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { pathToFileURL } = require("url");
 const auth = require("./auth");
+const { DEFAULT_SESSION, normalizeSession, repairedBounds } = require("./session-state");
 
 // Web Audio must be allowed without a user gesture (headless/VNC use, autoplay)
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
@@ -42,13 +43,23 @@ const ENV_SECTION = process.env.PLEX_SECTION || "";
 let playerWindow = null;
 let libraryWindow = null;
 
-// ---------- player mode (desktop panels vs windowed) ----------
+// ---------- durable session state ----------
+// Webamp owns panel geometry. Electron owns the outer player/library windows;
+// session-state.json stores only the visibility/mode/zoom and Electron bounds.
+let sessionState = null;
+let isQuitting = false;
+let isRestartingPlayer = false;
+
 function playerModePath() {
   return path.join(app.getPath("userData"), "player-mode.json");
 }
+function sessionStatePath() {
+  return path.join(app.getPath("userData"), "session-state.json");
+}
 function readPlayerMode() {
   try {
-    return JSON.parse(fs.readFileSync(playerModePath(), "utf8")).mode || "desktop";
+    const mode = JSON.parse(fs.readFileSync(playerModePath(), "utf8")).mode;
+    return mode === "windowed" ? "windowed" : "desktop";
   } catch {
     return "desktop";
   }
@@ -57,10 +68,61 @@ function writePlayerMode(mode) {
   fs.mkdirSync(path.dirname(playerModePath()), { recursive: true });
   fs.writeFileSync(playerModePath(), JSON.stringify({ mode }));
 }
+function cloneDefaultSession() {
+  return JSON.parse(JSON.stringify(DEFAULT_SESSION));
+}
+function readSessionState() {
+  if (sessionState) return sessionState;
+  try {
+    sessionState = normalizeSession(JSON.parse(fs.readFileSync(sessionStatePath(), "utf8")));
+  } catch {
+    // Keep the pre-session player-mode preference on a first run/migration.
+    sessionState = cloneDefaultSession();
+    sessionState.player.mode = readPlayerMode();
+  }
+  return sessionState;
+}
+function writeSessionState() {
+  const target = sessionStatePath();
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temp = `${target}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temp, `${JSON.stringify(sessionState, null, 2)}\n`);
+  fs.renameSync(temp, target);
+}
+function updateSession(patch) {
+  const next = JSON.parse(JSON.stringify(readSessionState()));
+  if (patch?.player && typeof patch.player === "object") {
+    if (patch.player.mode === "desktop" || patch.player.mode === "windowed") next.player.mode = patch.player.mode;
+    if (Number.isFinite(patch.player.zoomFactor)) next.player.zoomFactor = patch.player.zoomFactor;
+    if (patch.player.bounds === null || typeof patch.player.bounds === "object") next.player.bounds = patch.player.bounds;
+  }
+  if (patch?.panels && typeof patch.panels === "object") {
+    for (const key of Object.keys(next.panels)) {
+      if (typeof patch.panels[key] === "boolean") next.panels[key] = patch.panels[key];
+    }
+  }
+  if (patch?.library && typeof patch.library === "object") {
+    if (typeof patch.library.open === "boolean") next.library.open = patch.library.open;
+    if (patch.library.bounds === null || typeof patch.library.bounds === "object") next.library.bounds = patch.library.bounds;
+  }
+  sessionState = normalizeSession(next);
+  writeSessionState();
+  return sessionState;
+}
+function trackedBounds(win, key) {
+  if (!win || win.isDestroyed()) return;
+  const bounds = win.getBounds();
+  updateSession(key === "player" ? { player: { bounds } } : { library: { bounds } });
+}
+function attachBoundsTracking(win, key) {
+  win.on("move", () => trackedBounds(win, key));
+  win.on("resize", () => trackedBounds(win, key));
+}
 
 // ---------- windows ----------
 function createPlayerWindow() {
-  const mode = readPlayerMode(); // 'desktop' | 'windowed'
+  const saved = readSessionState();
+  const mode = saved.player.mode;
   if (mode === "desktop") {
     const wa = screen.getPrimaryDisplay().workArea;
     playerWindow = new BrowserWindow({
@@ -83,18 +145,14 @@ function createPlayerWindow() {
         nodeIntegration: false,
       },
     });
-    // Desktop-panels: click-through everywhere except the winamp cluster.
-    // The renderer toggles this as the pointer enters/leaves panel rects.
     playerWindow.setIgnoreMouseEvents(true, { forward: true });
-    // Panels visible on every Space (widget-like); toggle with ⌘T for on-top.
-    playerWindow.setVisibleOnAllWorkspaces(true, {
-      visibleOnFullScreen: false,
-    });
+    playerWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: false });
     playerWindow.loadURL("app://winamp/player.html?mode=desktop");
   } else {
+    const workArea = screen.getPrimaryDisplay().workArea;
+    const restored = saved.player.bounds ? repairedBounds(saved.player.bounds, workArea) : null;
     playerWindow = new BrowserWindow({
-      width: 740,
-      height: 480,
+      ...(restored || { width: 740, height: 480 }),
       frame: false,
       hasShadow: true,
       resizable: true,
@@ -108,8 +166,13 @@ function createPlayerWindow() {
         nodeIntegration: false,
       },
     });
+    attachBoundsTracking(playerWindow, "player");
     playerWindow.loadURL("app://winamp/player.html?mode=windowed");
   }
+  playerWindow.webContents.once("did-finish-load", () => {
+    const zoom = readSessionState().player.zoomFactor;
+    if (zoom !== 1) playerWindow?.webContents.setZoomFactor(zoom);
+  });
 }
 
 function createLibraryWindow() {
@@ -118,9 +181,11 @@ function createLibraryWindow() {
     libraryWindow.focus();
     return;
   }
+  const saved = readSessionState();
+  const workArea = screen.getPrimaryDisplay().workArea;
+  const bounds = repairedBounds(saved.library.bounds, workArea);
   libraryWindow = new BrowserWindow({
-    width: 1100,
-    height: 720,
+    ...bounds,
     backgroundColor: "#0a0a0c",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 10, y: 10 },
@@ -131,25 +196,32 @@ function createLibraryWindow() {
       nodeIntegration: false,
     },
   });
+  updateSession({ library: { open: true, bounds } });
+  attachBoundsTracking(libraryWindow, "library");
   libraryWindow.loadURL("app://winamp/library.html");
   libraryWindow.once("ready-to-show", () => libraryWindow.show());
   libraryWindow.on("closed", () => {
+    if (!isQuitting) updateSession({ library: { open: false } });
     libraryWindow = null;
   });
 }
 
 function toggleLibrary() {
-  if (libraryWindow && !libraryWindow.isDestroyed()) {
-    libraryWindow.close();
-  } else {
-    createLibraryWindow();
-  }
+  if (libraryWindow && !libraryWindow.isDestroyed()) libraryWindow.close();
+  else createLibraryWindow();
 }
 
 function setPlayerModeAndRestart(mode) {
-  writePlayerMode(mode);
-  if (playerWindow && !playerWindow.isDestroyed()) playerWindow.destroy();
-  createPlayerWindow();
+  updateSession({ player: { mode } });
+  writePlayerMode(mode); // retain compatibility with existing installations.
+  const oldPlayer = playerWindow;
+  isRestartingPlayer = true;
+  try {
+    createPlayerWindow();
+    if (oldPlayer && !oldPlayer.isDestroyed()) oldPlayer.destroy();
+  } finally {
+    isRestartingPlayer = false;
+  }
 }
 
 // ---------- plex helpers ----------
@@ -400,26 +472,28 @@ ipcMain.on("player:setIgnore", (_e, ignore) => {
   }
 });
 
+// ---------- session bridge ----------
+ipcMain.handle("session:get", () => readSessionState());
+ipcMain.handle("session:update", (_e, patch) => updateSession(patch));
+
 // ---------- player mode toggle ----------
-ipcMain.handle("player:getMode", () => readPlayerMode());
+ipcMain.handle("player:getMode", () => readSessionState().player.mode);
 ipcMain.handle("player:setMode", (_e, mode) => {
-  writePlayerMode(mode);
-  // relaunch player window in the new mode
-  if (playerWindow && !playerWindow.isDestroyed()) playerWindow.destroy();
-  createPlayerWindow();
+  if (mode !== "desktop" && mode !== "windowed") return readSessionState().player.mode;
+  setPlayerModeAndRestart(mode);
+  return mode;
 });
 
 // ---------- fractional scaling (zoom) ----------
 ipcMain.handle("player:getZoom", () => {
-  if (playerWindow && !playerWindow.isDestroyed()) {
-    return playerWindow.webContents.getZoomFactor();
-  }
-  return 1;
+  if (playerWindow && !playerWindow.isDestroyed()) return playerWindow.webContents.getZoomFactor();
+  return readSessionState().player.zoomFactor;
 });
 ipcMain.handle("player:setZoom", (_e, factor) => {
-  if (playerWindow && !playerWindow.isDestroyed()) {
-    playerWindow.webContents.setZoomFactor(factor);
-  }
+  if (!Number.isFinite(factor) || factor < 0.75 || factor > 2) return readSessionState().player.zoomFactor;
+  updateSession({ player: { zoomFactor: factor } });
+  if (playerWindow && !playerWindow.isDestroyed()) playerWindow.webContents.setZoomFactor(factor);
+  return factor;
 });
 
 // ---------- env passthrough ----------
@@ -441,7 +515,10 @@ const template = [
         label: "Scale",
         submenu: [1, 1.15, 1.25, 1.5, 1.75, 2, 0.75].map((f) => ({
           label: f === 1 ? "100% (normal)" : `${Math.round(f * 100)}%`,
-          click: () => playerWindow?.webContents.setZoomFactor(f),
+          click: () => {
+            updateSession({ player: { zoomFactor: f } });
+            playerWindow?.webContents.setZoomFactor(f);
+          },
         })),
       },
       { type: "separator" },
@@ -546,15 +623,34 @@ app.whenReady().then(() => {
   );
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  const saved = readSessionState();
   createPlayerWindow();
-  createLibraryWindow();
+  if (saved.library.open) createLibraryWindow();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createPlayerWindow();
-      createLibraryWindow();
+      if (readSessionState().library.open) createLibraryWindow();
     }
   });
 });
 
-app.on("window-all-closed", () => app.quit());
+app.on("before-quit", () => {
+  isQuitting = true;
+  if (libraryWindow && !libraryWindow.isDestroyed()) {
+    updateSession({ library: { open: true, bounds: libraryWindow.getBounds() } });
+  }
+  if (playerWindow && !playerWindow.isDestroyed()) {
+    updateSession({ player: { zoomFactor: playerWindow.webContents.getZoomFactor() } });
+    if (readSessionState().player.mode === "windowed") {
+      updateSession({ player: { bounds: playerWindow.getBounds() } });
+    }
+  }
+});
+app.on("window-all-closed", (event) => {
+  if (isRestartingPlayer) {
+    event.preventDefault();
+    return;
+  }
+  app.quit();
+});

@@ -32,6 +32,9 @@ contextBridge.exposeInMainWorld("plex", {
   // mode
   getMode: () => ipcRenderer.invoke("player:getMode"),
   setMode: (mode) => ipcRenderer.invoke("player:setMode", mode),
+  // durable session state (player panel visibility + Electron window state)
+  getSession: () => ipcRenderer.invoke("session:get"),
+  updateSession: (patch) => ipcRenderer.invoke("session:update", patch),
   // env passthrough
   getEnvSection: () => ipcRenderer.invoke("env:section"),
   hasLocalPresetPack: () => ipcRenderer.invoke("presets:hasLocalPack"),
