@@ -1,8 +1,10 @@
 # Plexamp Classic
 
-Old-school Winamp 2.9 on macOS, wired to Plex — including owned and shared servers.
+Old-school Winamp 2.9-style player for macOS, wired to Plex — including owned and shared servers.
 
-![Winamp player, equalizer, playlist, and MilkDrop visualizer](screenshots/cluster.png)
+![Plexamp Classic media library connected to Plex](screenshots/library-hero.png)
+
+The library browser is the bridge: search Plex artists, choose an album, and send it to the Winamp-style player.
 
 ## What it does
 
@@ -16,9 +18,9 @@ Plexamp Classic packages [Webamp](https://github.com/captbaritone/webamp), a pix
 - **Fractional scaling** — 75%, 100%, 115%, 125%, 150%, 175%, and 200%; also available with `⌘=`, `⌘-`, and `⌘0`.
 - Media keys, classic windowshade behavior, and `.wsz` skin drag-and-drop.
 
-### Media Library
+### Winamp player
 
-![Plex Media Library browser](screenshots/library.png)
+![Winamp player, equalizer, and playlist](screenshots/cluster-tight.png)
 
 ### MilkDrop
 
