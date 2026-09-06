@@ -1,6 +1,6 @@
 {
   "name": "plexamp-classic",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Old-school Winamp-style macOS player with Plex library integration and federation",
   "main": "main.js",
   "type": "commonjs",
