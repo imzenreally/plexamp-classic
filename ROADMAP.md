@@ -222,3 +222,43 @@ Each new source should implement the same internal queue contract rather than ad
 5. Replace the current media-key-only integration with Now Playing metadata and command handling.
 
 That sequence improves the daily experience without committing the project to a second protected streaming backend prematurely.
+
+## Next implementation slice after v0.5.0
+
+The v0.5.0 search tree now provides artist-first results, lazy artist discographies, Plex release-group branches, keyboard traversal, and album/track activation. The current working tree adds View-menu checkboxes for player panels, panel-state IPC, and `⌘L` protection, but that slice still needs to be landed and exercised before building on it. The next feature slice should make library selections compose with the Winamp queue instead of always replacing it.
+
+### 1. Close the View-menu and panel-control slice
+
+**Priority:** prerequisite / P0
+
+- **Milestone:** Verify and land the existing `main.js`/`player.js`/`preload.js` changes without expanding their scope. Keep the main player non-toggleable, keep menu checkmarks synchronized after Webamp panel changes, and ensure opening/closing the Media Library rebuilds the menu state.
+- **Acceptance:** Toggling Playlist, Equalizer, or MilkDrop from View changes the actual Webamp panel and its checkmark; toggling a panel inside Webamp updates the checkmark; the main player remains visible; `⌘L` opens/closes only the library; relaunch restores panel visibility and the selected player mode.
+- **Likely files:** `main.js`, `player.js`, `preload.js`, `session-state.js`, `test/session-state.test.js` (plus a small extracted menu/panel helper if unit coverage cannot safely load Electron).
+- **Verification:** `npm test`, `git diff --check`, `node --check main.js player.js preload.js`; packaged/manual E2E in both desktop and windowed modes covering all View items, `⌘L`, panel persistence, and desktop click-through.
+
+### 2. Define an explicit queue-operation contract
+
+**Priority:** P0
+
+- **Milestone:** Replace the current single `enqueueTracks`/`setTracksToPlay` path with explicit `Play now` (replace), `Add to queue` (append), and `Play next` operations. Preserve the existing Plex track normalization and opaque `app-stream://` URLs; do not add source-specific queue behavior to the library.
+- **Acceptance:** A selected album or track exposes all three intentional actions; Play now starts the selection and replaces the queue, Add appends without disturbing the current item, and Play next inserts immediately after the current item. Empty or unplayable Plex responses leave the queue unchanged and report an actionable error.
+- **Likely files:** `library.js`, `library.html`, `player.js`, `preload.js`, `main.js`; add a pure queue-operation adapter/helper if Webamp's store/API needs isolation.
+- **Verification:** Unit-test operation ordering and empty-input/error behavior with a fake Webamp queue; E2E-select an album, append a second album, insert a track next, then confirm playback order and current-track continuity in the Winamp playlist.
+
+### 3. Persist the queue and current playback identity, not just window/panel state
+
+**Priority:** P0
+
+- **Milestone:** Extend the existing versioned `session-state.json` contract to store a sanitized queue, current track identity, position, and safe paused/resume state. Persist Plex server identity plus rating keys and metadata needed to rebuild streams rather than treating `app-stream://` URLs as durable identifiers.
+- **Acceptance:** Relaunching with a populated queue restores queue order, current item, position, volume, shuffle, and repeat without unexpected autoplay; expired stream URLs are rebuilt from Plex identity or shown as unavailable; malformed/old state falls back without blocking launch; writes remain atomic.
+- **Likely files:** `session-state.js`, `main.js`, `player.js`, `preload.js`, `test/session-state.test.js`; add a focused queue/session test module rather than testing Electron globals directly.
+- **Verification:** Unit-test normalization, migration, corruption recovery, URL non-persistence, and queue ordering; manual/E2E kill-and-relaunch while paused and during a queue, including a disconnected-server case.
+
+### 4. Make search results and library browsing scale without losing context
+
+**Priority:** P1
+
+- **Milestone:** After queue semantics are stable, add abortable/debounced request ownership and a bounded rendering strategy for large artist/result sets, while preserving the v0.5.0 tree's expanded selection where the query/server context is unchanged.
+- **Acceptance:** A stale search or artist/discography response cannot overwrite a newer query or server; a 2,500+ artist library does not render unbounded DOM nodes; keyboard focus and the selected artist/tree branch survive ordinary navigation; empty, partial, and failed states remain distinct.
+- **Likely files:** `library.js`, `library.html`, `search-tree.js`, `test/search-tree.test.js`; use `AbortController` only where the existing IPC/request layer can actually cancel it, otherwise retain generation guards and document that limitation.
+- **Verification:** Extend pure tree tests for selection/focus preservation and bounded rows; E2E rapidly change queries and servers, expand an artist while requests resolve out of order, and browse a large fixture/library at fractional zoom.

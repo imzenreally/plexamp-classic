@@ -137,7 +137,7 @@ function createPlayerWindow() {
       resizable: false,
       movable: false,
       backgroundColor: "#00000000",
-      alwaysOnTop: false,
+      alwaysOnTop: saved.player.alwaysOnTop,
       skipTaskbar: true,
       title: "Winamp Classic",
       webPreferences: {
@@ -159,7 +159,7 @@ function createPlayerWindow() {
       resizable: true,
       movable: true,
       backgroundColor: "#1e1e24",
-      alwaysOnTop: false,
+      alwaysOnTop: saved.player.alwaysOnTop,
       title: "Winamp Classic",
       webPreferences: {
         preload: path.join(__dirname, "preload.js"),
@@ -180,6 +180,7 @@ function createLibraryWindow() {
   if (libraryWindow && !libraryWindow.isDestroyed()) {
     libraryWindow.show();
     libraryWindow.focus();
+    rebuildMenu();
     return;
   }
   const saved = readSessionState();
@@ -198,21 +199,27 @@ function createLibraryWindow() {
     },
   });
   updateSession({ library: { open: true, bounds } });
+  rebuildMenu();
   attachBoundsTracking(libraryWindow, "library");
   libraryWindow.loadURL("app://winamp/library.html");
   libraryWindow.once("ready-to-show", () => libraryWindow.show());
   libraryWindow.on("closed", () => {
     if (!isQuitting) updateSession({ library: { open: false } });
     libraryWindow = null;
+    rebuildMenu();
   });
 }
 
 function toggleLibrary() {
   if (libraryWindow && !libraryWindow.isDestroyed()) libraryWindow.close();
   else createLibraryWindow();
+  rebuildMenu();
 }
 
 function setPlayerModeAndRestart(mode) {
+  if (mode === readSessionState().player.mode && playerWindow && !playerWindow.isDestroyed()) {
+    return; // radio menu item re-click; don't churn the window
+  }
   updateSession({ player: { mode } });
   writePlayerMode(mode); // retain compatibility with existing installations.
   const oldPlayer = playerWindow;
@@ -223,6 +230,7 @@ function setPlayerModeAndRestart(mode) {
   } finally {
     isRestartingPlayer = false;
   }
+  rebuildMenu();
 }
 
 // ---------- plex helpers ----------
@@ -483,6 +491,17 @@ ipcMain.on("player:setIgnore", (_e, ignore) => {
 ipcMain.handle("session:get", () => readSessionState());
 ipcMain.handle("session:update", (_e, patch) => updateSession(patch));
 
+// ---------- webamp panel visibility <-> View menu ----------
+ipcMain.on("panels:changed", (_e, panels) => {
+  if (panels && typeof panels === "object") {
+    updateSession({ panels });
+  }
+  rebuildMenu();
+});
+ipcMain.on("panel:toggle", (_e, id) => {
+  sendToPlayer("panel:toggle", id);
+});
+
 // ---------- player mode toggle ----------
 ipcMain.handle("player:getMode", () => readSessionState().player.mode);
 ipcMain.handle("player:setMode", (_e, mode) => {
@@ -510,45 +529,104 @@ ipcMain.handle("presets:hasLocalPack", () =>
 );
 
 // ---------- menu ----------
-const template = [
-  { role: "appMenu" },
-  { role: "editMenu" },
-  {
-    label: "View",
-    submenu: [
-      { label: "Toggle Media Library", accelerator: "CmdOrCtrl+L", click: toggleLibrary },
-      { type: "separator" },
-      {
-        label: "Scale",
-        submenu: [1, 1.15, 1.25, 1.5, 1.75, 2, 0.75].map((f) => ({
-          label: f === 1 ? "100% (normal)" : `${Math.round(f * 100)}%`,
+// View menu: checkbox "tiles" for every webamp panel + Media Library, with
+// live checkmark state driven by the player's panel store and session state.
+
+function sendToPlayer(channel, ...args) {
+  if (playerWindow && !playerWindow.isDestroyed()) {
+    playerWindow.webContents.send(channel, ...args);
+  }
+}
+
+function rebuildMenu() {
+  const saved = readSessionState();
+  const template = [
+    { role: "appMenu" },
+    { role: "editMenu" },
+    {
+      label: "View",
+      submenu: [
+        {
+          label: "Main Player",
+          type: "checkbox",
+          checked: true,
+          enabled: false, // the main player is the app's base surface
+          click: () => {},
+        },
+        {
+          label: "Playlist",
+          type: "checkbox",
+          checked: Boolean(saved.panels.playlist),
+          click: () => sendToPlayer("panel:toggle", "playlist"),
+        },
+        {
+          label: "Equalizer",
+          type: "checkbox",
+          checked: Boolean(saved.panels.equalizer),
+          click: () => sendToPlayer("panel:toggle", "equalizer"),
+        },
+        {
+          label: "Visualizer (MilkDrop)",
+          type: "checkbox",
+          checked: Boolean(saved.panels.milkdrop),
+          click: () => sendToPlayer("panel:toggle", "milkdrop"),
+        },
+        { type: "separator" },
+        {
+          label: "Media Library",
+          type: "checkbox",
+          checked: Boolean(libraryWindow && !libraryWindow.isDestroyed()),
+          accelerator: "CmdOrCtrl+L",
+          click: toggleLibrary,
+        },
+        { type: "separator" },
+        {
+          label: "Scale",
+          submenu: [1, 1.15, 1.25, 1.5, 1.75, 2, 0.75].map((f) => ({
+            label: f === 1 ? "100% (normal)" : `${Math.round(f * 100)}%`,
+            type: "checkbox",
+            checked: Math.abs(saved.player.zoomFactor - f) < 0.01,
+            click: () => {
+              updateSession({ player: { zoomFactor: f } });
+              playerWindow?.webContents.setZoomFactor(f);
+              rebuildMenu();
+            },
+          })),
+        },
+        { type: "separator" },
+        {
+          label: "Desktop Panels",
+          type: "checkbox",
+          checked: saved.player.mode === "desktop",
+          accelerator: "CmdOrCtrl+P",
+          click: () => setPlayerModeAndRestart("desktop"),
+        },
+        {
+          label: "Windowed Player",
+          type: "checkbox",
+          checked: saved.player.mode === "windowed",
+          accelerator: "CmdOrCtrl+O",
+          click: () => setPlayerModeAndRestart("windowed"),
+        },
+        { type: "separator" },
+        {
+          label: "Always on Top",
+          type: "checkbox",
+          checked: Boolean(playerWindow && !playerWindow.isDestroyed() && playerWindow.isAlwaysOnTop()),
+          accelerator: "CmdOrCtrl+T",
           click: () => {
-            updateSession({ player: { zoomFactor: f } });
-            playerWindow?.webContents.setZoomFactor(f);
+            const alwaysOnTop = Boolean(playerWindow && !playerWindow.isDestroyed() && !playerWindow.isAlwaysOnTop());
+            playerWindow?.setAlwaysOnTop(alwaysOnTop);
+            updateSession({ player: { alwaysOnTop } });
+            rebuildMenu();
           },
-        })),
-      },
-      { type: "separator" },
-      {
-        label: "Desktop Panels",
-        accelerator: "CmdOrCtrl+P",
-        click: () => setPlayerModeAndRestart("desktop"),
-      },
-      {
-        label: "Windowed Player",
-        accelerator: "CmdOrCtrl+O",
-        click: () => setPlayerModeAndRestart("windowed"),
-      },
-      { type: "separator" },
-      {
-        label: "Always on Top",
-        accelerator: "CmdOrCtrl+T",
-        click: () => playerWindow?.setAlwaysOnTop(!playerWindow.isAlwaysOnTop()),
-      },
-    ],
-  },
-  { role: "windowMenu" },
-];
+        },
+      ],
+    },
+    { role: "windowMenu" },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
 
 app.whenReady().then(() => {
   protocol.handle("app", (request) => {
@@ -629,7 +707,7 @@ app.whenReady().then(() => {
     strip
   );
 
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  rebuildMenu();
   const saved = readSessionState();
   createPlayerWindow();
   if (saved.library.open) createLibraryWindow();

@@ -9,7 +9,7 @@ const {
 test("first-run session opens only the main player tile", () => {
   assert.deepEqual(DEFAULT_SESSION, {
     version: 1,
-    player: { mode: "desktop", zoomFactor: 1, bounds: null },
+    player: { mode: "desktop", zoomFactor: 1, bounds: null, alwaysOnTop: false },
     panels: { main: true, playlist: false, equalizer: false, milkdrop: false },
     library: { open: false, bounds: null },
   });
@@ -25,7 +25,7 @@ test("normalizes malformed saved session state without reopening closed surfaces
 
   assert.deepEqual(state, {
     version: 1,
-    player: { mode: "desktop", zoomFactor: 1, bounds: null },
+    player: { mode: "desktop", zoomFactor: 1, bounds: null, alwaysOnTop: false },
     panels: { main: true, playlist: false, equalizer: false, milkdrop: false },
     library: { open: false, bounds: null },
   });
@@ -34,13 +34,14 @@ test("normalizes malformed saved session state without reopening closed surfaces
 test("preserves valid session state and clamps zoom", () => {
   const state = normalizeSession({
     version: 1,
-    player: { mode: "windowed", zoomFactor: 1.25, bounds: { x: 30, y: 40, width: 800, height: 600 } },
+    player: { mode: "windowed", zoomFactor: 1.25, bounds: { x: 30, y: 40, width: 800, height: 600 }, alwaysOnTop: true },
     panels: { main: true, playlist: true, equalizer: false, milkdrop: true },
     library: { open: true, bounds: { x: 20, y: 30, width: 1100, height: 720 } },
   });
 
   assert.equal(state.player.mode, "windowed");
   assert.equal(state.player.zoomFactor, 1.25);
+  assert.equal(state.player.alwaysOnTop, true);
   assert.deepEqual(state.player.bounds, { x: 30, y: 40, width: 800, height: 600 });
   assert.equal(state.panels.playlist, true);
   assert.equal(state.panels.milkdrop, true);

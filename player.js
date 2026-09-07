@@ -95,7 +95,8 @@ function restorePanelState(desired) {
 function schedulePanelStateSave() {
   clearTimeout(panelStateSyncTimer);
   panelStateSyncTimer = setTimeout(() => {
-    window.plex.updateSession({ panels: currentPanelState() });
+    // main process persists the panel state AND syncs the View-menu checkmarks
+    window.plex.sendPanelsChanged(currentPanelState());
   }, 150);
 }
 
@@ -175,9 +176,24 @@ async function bumpZoom(dir) {
 }
 document.addEventListener("keydown", (e) => {
   if (!e.metaKey) return;
+  // ⌘L belongs to the app menu (Media Library). Webamp's Win-era hotkey table
+  // only checks ctrlKey, so ⌘L leaks into its bare-L handler and ALSO pops the
+  // local file picker. Swallow it at capture phase before webamp sees it.
+  if (e.key === "l" || e.key === "L") {
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
   if (e.key === "=" || e.key === "+") { e.preventDefault(); bumpZoom(1); }
   else if (e.key === "-") { e.preventDefault(); bumpZoom(-1); }
   else if (e.key === "0") { e.preventDefault(); bumpZoom(0); }
+}, true);
+
+// ---------- panel toggles from the View menu ----------
+window.plex.onPanelToggle((id) => {
+  if (!webamp?.store) return;
+  if (id === "main") return; // base surface, never toggled
+  webamp.store.dispatch({ type: "TOGGLE_WINDOW", windowId: id });
 });
 
 // ---------- enqueue from the library window ----------

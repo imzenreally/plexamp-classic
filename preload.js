@@ -23,6 +23,10 @@ contextBridge.exposeInMainWorld("plex", {
   // library -> player enqueue
   enqueueTracks: (tracks) => ipcRenderer.send("library:enqueue", tracks),
   onEnqueue: (cb) => ipcRenderer.on("player:enqueue", (_e, tracks) => cb(tracks)),
+  // webamp panel visibility -> menu checkmarks (player -> main)
+  sendPanelsChanged: (panels) => ipcRenderer.send("panels:changed", panels),
+  // menu clicks -> player (main -> player)
+  onPanelToggle: (cb) => ipcRenderer.on("panel:toggle", (_e, id) => cb(id)),
   // window sizing (player window, windowed mode)
   setWindowBounds: (bounds) => ipcRenderer.send("player:setBounds", bounds),
   // click-through control (player window, desktop mode)

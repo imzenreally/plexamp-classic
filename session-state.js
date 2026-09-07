@@ -2,7 +2,7 @@ const DEFAULT_LIBRARY_BOUNDS = { width: 1100, height: 720 };
 
 const DEFAULT_SESSION = Object.freeze({
   version: 1,
-  player: { mode: "desktop", zoomFactor: 1, bounds: null },
+  player: { mode: "desktop", zoomFactor: 1, bounds: null, alwaysOnTop: false },
   panels: { main: true, playlist: false, equalizer: false, milkdrop: false },
   library: { open: false, bounds: null },
 });
@@ -57,6 +57,9 @@ function normalizeSession(raw) {
       width: Math.round(raw.player.bounds.width),
       height: Math.round(raw.player.bounds.height),
     };
+  }
+  if (typeof raw.player?.alwaysOnTop === "boolean") {
+    state.player.alwaysOnTop = raw.player.alwaysOnTop;
   }
   for (const panel of Object.keys(state.panels)) {
     if (typeof raw.panels?.[panel] === "boolean") state.panels[panel] = raw.panels[panel];
