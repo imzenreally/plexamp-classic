@@ -1,9 +1,11 @@
 {
   "name": "plexamp-classic",
   "version": "0.6.0",
-  "description": "Old-school Winamp-style macOS player with Plex library integration and federation",
+  "description": "Old-school Winamp-style desktop player with Plex library integration and federation",
   "main": "main.js",
   "type": "commonjs",
+  "desktopName": "plexamp-classic",
+  "author": "imzenreally",
   "scripts": {
     "postinstall": "node scripts/prepare-vendor.js",
     "start": "electron .",
@@ -48,6 +50,21 @@
       "icon": "build/icon.icns",
       "identity": null,
       "darkModeSupport": true
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Audio",
+      "icon": "build/icons",
+      "syncDesktopName": true,
+      "artifactName": "Plexamp-Classic-${version}-x86_64.AppImage",
+      "maintainer": "imzenreally"
     }
   }
 }

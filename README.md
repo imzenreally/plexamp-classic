@@ -1,6 +1,6 @@
 # Plexamp Classic
 
-Old-school Winamp 2.9-style player for macOS, wired to Plex — including owned and shared servers.
+Old-school Winamp 2.9-style player for macOS and Linux, wired to Plex — including owned and shared servers.
 
 ![Plexamp Classic media library connected to Plex](screenshots/library-hero.png)
 
@@ -28,7 +28,7 @@ Plexamp Classic packages [Webamp](https://github.com/captbaritone/webamp), a pix
 
 ## Requirements
 
-- macOS
+- macOS (universal) or Linux x86_64
 - Node.js 22 or newer
 - A Plex account or a direct Plex Media Server URL and token
 
@@ -62,6 +62,16 @@ npm run dist
 ```
 
 The unsigned build is written under `dist/`. Because it is not notarized, macOS may require the usual right-click → Open approval on first launch.
+
+## Build the Linux AppImage
+
+```bash
+npx electron-builder --linux AppImage
+```
+
+The build must run on Linux x86_64 (electron-builder's AppImage tooling is Linux-only). Build inside an older-stable container such as `node:22-bullseye` so the resulting AppImage's glibc requirement stays low and it runs on a wide range of distros.
+
+The AppImage's desktop entry launches with `--no-sandbox` — the standard electron-builder default for AppImages, because Chromium's sandbox cannot be setuid through FUSE. The artifact is written under `dist/`.
 
 ## Architecture
 
