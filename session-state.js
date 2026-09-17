@@ -2,13 +2,20 @@ const DEFAULT_LIBRARY_BOUNDS = { width: 1100, height: 720 };
 
 const DEFAULT_SESSION = Object.freeze({
   version: 1,
-  player: { mode: "desktop", zoomFactor: 1, bounds: null, alwaysOnTop: false },
+  player: { mode: "float", zoomFactor: 1, bounds: null, cluster: null, alwaysOnTop: false },
   panels: { main: true, playlist: false, equalizer: false, milkdrop: false },
   library: { open: false, bounds: null },
 });
 
 function copyDefault() {
   return JSON.parse(JSON.stringify(DEFAULT_SESSION));
+}
+
+function validCluster(value) {
+  return value && Number.isFinite(value.x) && Number.isFinite(value.y) &&
+    Number.isFinite(value.width) && Number.isFinite(value.height) &&
+    value.width >= 40 && value.width <= 4000 &&
+    value.height >= 40 && value.height <= 4000;
 }
 
 function validBounds(value) {
@@ -44,11 +51,21 @@ function normalizeSession(raw) {
   const state = copyDefault();
   if (!raw || raw.version !== 1) return state;
 
-  if (raw.player?.mode === "desktop" || raw.player?.mode === "windowed") {
-    state.player.mode = raw.player.mode;
+  if (raw.player?.mode === "desktop" || raw.player?.mode === "windowed" || raw.player?.mode === "float") {
+    // "desktop" was the old name for the floating-panels overlay; it maps to
+    // float at read time so legacy sessions upgrade transparently.
+    state.player.mode = raw.player.mode === "windowed" ? "windowed" : "float";
   }
   if (Number.isFinite(raw.player?.zoomFactor) && raw.player.zoomFactor >= 0.75 && raw.player.zoomFactor <= 2) {
     state.player.zoomFactor = raw.player.zoomFactor;
+  }
+  if (validCluster(raw.player?.cluster)) {
+    state.player.cluster = {
+      x: Math.round(raw.player.cluster.x),
+      y: Math.round(raw.player.cluster.y),
+      width: Math.round(raw.player.cluster.width),
+      height: Math.round(raw.player.cluster.height),
+    };
   }
   if (validBounds(raw.player?.bounds)) {
     state.player.bounds = {

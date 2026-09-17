@@ -1,17 +1,21 @@
 /* player.js — Winamp, two modes:
- *   desktop:  transparent full-screen surface, panels float anywhere,
- *             click-through everywhere except the panels themselves
+ *   float:    transparent cluster window hugging the panels; gaps are
+ *             click-through, the desktop shows between panels. The window
+ *             follows panel drags (renderer-driven), so panels can live
+ *             anywhere on screen without a full-screen overlay.
  *   windowed: normal opaque window sized to the winamp cluster
- * Mode comes from the URL (?mode=desktop|windowed); the menu toggles it.
+ * Mode comes from the URL (?mode=float|windowed); the menu toggles it.
+ * "desktop" is accepted as a legacy alias for float.
  */
 let webamp = null;
 let pendingTracks = null;
 let panelStateSyncTimer = null;
 const PANEL_IDS = ["main", "playlist", "equalizer", "milkdrop"];
-const MODE = new URLSearchParams(location.search).get("mode") || "desktop";
+const rawMode = new URLSearchParams(location.search).get("mode") || "float";
+const MODE = rawMode === "windowed" ? "windowed" : "float";
 if (MODE === "windowed") document.body.classList.add("windowed");
 
-// ---------- mode: desktop click-through ----------
+// ---------- mode: float/windowed click-through + cluster tracking ----------
 let ignoring = true;
 let pointerInside = false;
 let pointerDown = false;
@@ -36,7 +40,7 @@ function insideAnyPanel(x, y) {
   );
 }
 
-if (MODE === "desktop") {
+if (MODE !== "windowed") {
   document.addEventListener("mousemove", (e) => {
     pointerInside = insideAnyPanel(e.clientX, e.clientY);
     if (!pointerDown) setIgnore(!pointerInside);
@@ -49,14 +53,134 @@ if (MODE === "desktop") {
   setIgnore(true);
 }
 
-// ---------- mode: windowed bounds tracking ----------
-// NOTE: getBoundingClientRect reports UNZOOMED CSS px under webContents zoom,
-// so dimensions must be scaled by the current zoom factor or the window
-// clips its content at >100%.
+// ---------- mode: float cluster tracking ----------
+// The float window is a transparent rectangle wrapping the panel cluster
+// plus a margin on every side. Gaps inside the window are click-through.
+//
+// Two sync shapes, chosen for drag safety (webamp diffs pointer events from
+// a pointerdown anchor, so moving the window ORIGIN under an in-flight drag
+// would feed back into its math and fling the panel):
+//   live (pointer down): grow-only — extend right/bottom edges so a panel
+//     being dragged toward the edge never clips. Origin never moves.
+//   full (pointer up / toggle / zoom / init): re-wrap the window around the
+//     cluster with a fresh margin, then counter-translate #webamp-slot by
+//     the window's move delta so panels stay visually fixed on screen.
+//
+// getBoundingClientRect reports UNZOOMED CSS px under webContents zoom, so
+// all deltas are scaled by the current zoom factor.
+const FLOAT_MARGIN = 320; // css px of transparent margin around the cluster
 let currentZoom = 1;
 async function refreshZoom() {
   currentZoom = (await window.plex.getZoom()) || 1;
 }
+let clusterTimer = null;
+function scheduleClusterSync(live) {
+  if (MODE !== "float") return;
+  clearTimeout(clusterTimer);
+  clusterTimer = setTimeout(() => syncCluster({ live }), live ? 40 : 0);
+}
+// Full rewraps run on a TRAILING debounce: webamp commits its final panel
+// position some time AFTER pointerup, and a rewrap that fires first shifts
+// the coordinate space under that write (panel flings). Any panel-root
+// mutation inside the window postpones the rewrap until webamp settles.
+let rewrapTimer = null;
+function scheduleRewrap() {
+  if (MODE !== "float") return;
+  clearTimeout(rewrapTimer);
+  rewrapTimer = setTimeout(() => syncCluster({ live: false }), 150);
+}
+function visiblePanels() {
+  const els = [...document.querySelectorAll("#webamp div")].filter((el) => {
+    if (el.id === "webamp") return false;
+    const s = getComputedStyle(el);
+    if (s.position !== "absolute") return false;
+    if (el.offsetWidth < 100 || el.offsetHeight < 40) return false;
+    return true;
+  });
+  return els.filter((el) => !els.some((o) => o !== el && o.contains(el)));
+}
+// Last cluster bounds the renderer ASKED the main process to apply. Read
+// back NEVER — window.screenX/Y updates asynchronously, so deriving dx from
+// a live read races the compositor and compounds errors.
+let lastCluster = null; // { x, y, width, height } as sent to player:setCluster
+
+function syncCluster({ live = false } = {}) {
+  if (MODE !== "float" || !window.plex.setCluster) return;
+  const panels = visiblePanels();
+  if (!panels.length) return;
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+  for (const el of panels) {
+    const r = el.getBoundingClientRect();
+    x1 = Math.min(x1, r.left); y1 = Math.min(y1, r.top);
+    x2 = Math.max(x2, r.right); y2 = Math.max(y2, r.bottom);
+  }
+  if (live) {
+    // Grow-only: keep the origin; extend edges so nothing clips mid-drag.
+    // Size is capped to the display so macOS never rejects the call.
+    const scr = window.screen;
+    const base = lastCluster || { x: window.screenX, y: window.screenY, width: window.outerWidth, height: window.outerHeight };
+    lastCluster = {
+      x: base.x,
+      y: base.y,
+      width: Math.min(Math.max(base.width, Math.ceil((x2 + 80) * currentZoom)), scr.availWidth),
+      height: Math.min(Math.max(base.height, Math.ceil((y2 + 80) * currentZoom)), scr.availHeight),
+    };
+    window.plex.setCluster({ ...lastCluster });
+    return;
+  }
+  // Full re-wrap, in SCREEN space (valid at rest — full syncs only run when
+  // no drag is in flight): wrap the cluster with a FLOAT_MARGIN on every
+  // side, clamp to the current display's work area, move the window there,
+  // then counter-translate #webamp by the actual move so panels stay put.
+  const scr = window.screen;
+  const clusterLeft = window.screenX + x1 * currentZoom;
+  const clusterTop = window.screenY + y1 * currentZoom;
+  const clusterW = (x2 - x1) * currentZoom;
+  const clusterH = (y2 - y1) * currentZoom;
+  const tw = Math.min(Math.ceil(clusterW + FLOAT_MARGIN * 2), scr.availWidth);
+  const th = Math.min(Math.ceil(clusterH + FLOAT_MARGIN * 2), scr.availHeight);
+  const tx = Math.round(Math.max(scr.availLeft, Math.min(clusterLeft - FLOAT_MARGIN, scr.availLeft + scr.availWidth - tw)));
+  const ty = Math.round(Math.max(scr.availTop, Math.min(clusterTop - FLOAT_MARGIN, scr.availTop + scr.availHeight - th)));
+  const dx = tx - window.screenX;
+  const dy = ty - window.screenY;
+  lastCluster = { x: tx, y: ty, width: tw, height: th };
+  window.plex.setCluster({ ...lastCluster });
+  // Webamp renders `#webamp` as a direct child of <body> (it portals out of
+  // #webamp-slot after render), so the counter-translate must target #webamp
+  // itself — transforming the slot does nothing to the panels.
+  const host = document.getElementById("webamp") || document.getElementById("webamp-slot");
+  if (host && host.id !== "webamp-slot") {
+    const cur = host.dataset.shift ? JSON.parse(host.dataset.shift) : { x: 0, y: 0 };
+    cur.x -= dx / currentZoom;
+    cur.y -= dy / currentZoom;
+    host.dataset.shift = JSON.stringify(cur);
+    host.style.transform = `translate(${cur.x}px, ${cur.y}px)`;
+  }
+}
+// Webamp restyles its windows constantly (drag, shade, resize); style/class
+// mutations are the cheapest signal that the cluster box may have changed.
+let floatObserver = null;
+function startFloatObserver() {
+  if (MODE !== "float" || floatObserver) return;
+  const host = document.getElementById("webamp") || document.getElementById("webamp-slot") || document.body;
+  floatObserver = new MutationObserver((records) => {
+    // Only panel-ROOT mutations count (webamp restyles its internals — LCD,
+    // marquee — constantly during playback; reacting to those would spin
+    // the observer). Our own #webamp transform writes are excluded too.
+    const real = records.some(
+      (r) => r.target.id !== "webamp" && r.target.className && String(r.target.className).includes("window")
+    );
+    if (!real) return;
+    if (pointerDown) scheduleClusterSync(true); // grow-only mid-drag
+    else scheduleRewrap(); // trailing; lets webamp's final write land first
+  });
+  floatObserver.observe(host, { subtree: true, attributes: true, attributeFilter: ["style", "class"] });
+}
+
+// ---------- mode: windowed bounds tracking ----------
+// NOTE: getBoundingClientRect reports UNZOOMED CSS px under webContents zoom,
+// so dimensions must be scaled by the current zoom factor or the window
+// clips its content at >100%.
 let windowSyncTimer = null;
 function scheduleWindowSync() {
   if (MODE !== "windowed") return;
@@ -171,6 +295,63 @@ async function initWebamp() {
     syncWindowSize();
     setTimeout(syncWindowSize, 800);
   }
+  if (MODE === "float") {
+    await refreshZoom();
+    startFloatObserver();
+    // Let webamp lay out its panels first, then wrap the window around them.
+    syncCluster();
+    setTimeout(() => syncCluster(), 300);
+    setTimeout(() => syncCluster(), 1200);
+    // Drags grow the window live; the full re-wrap (with slot counter-shift)
+    // happens on a trailing debounce after pointerup, so webamp's own final
+    // position write lands before we shift the coordinate space under it.
+    document.addEventListener("pointerup", () => scheduleRewrap(), true);
+    document.addEventListener("pointercancel", () => scheduleRewrap(), true);
+    // Panel toggles and store churn change the cluster size.
+    webamp.store.subscribe(() => scheduleClusterSync(pointerDown));
+    // Zoom changes from ANY source (hotkeys, menu, tray, bridge calls) alter
+    // the viewport — a resize event fires — so rewrap + rescale from there.
+    window.addEventListener("resize", () => {
+      refreshZoom();
+      scheduleRewrap();
+    });
+  }
+  // ---------- Winamp-style right-click menu ----------
+  // Preempts webamp's generic panel menu (which lacks app-level items);
+  // webamp's own menu stays reachable via the skin's O button (click).
+  // Webamp opens its DOM menu on right-BUTTONDOWN, before the contextmenu
+  // event dispatches — so suppressing the menu ALSO requires swallowing the
+  // right-mousedown at capture phase (stopPropagation before webamp's root
+  // listener sees it). The subsequent contextmenu event then reaches our
+  // handler and opens the native menu instead.
+  const interactiveSel =
+    "input, textarea, select, .track-cell, .playlist-tracks, .slider-handle, [role='slider'], .context-menu";
+  document.addEventListener(
+    "mousedown",
+    (e) => {
+      if (e.button !== 2) return;
+      const panel = e.target.closest("#webamp [class*='window']");
+      if (!panel) return;
+      if (e.target.closest(interactiveSel)) return;
+      e.stopPropagation();
+    },
+    true
+  );
+  document.addEventListener(
+    "contextmenu",
+    (e) => {
+      const panel = e.target.closest("#webamp [class*='window']");
+      if (!panel) return;
+      if (e.target.closest(interactiveSel)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      window.plex.openContextMenu?.(
+        Math.round(e.clientX * currentZoom),
+        Math.round(e.clientY * currentZoom)
+      );
+    },
+    true
+  );
   if (pendingTracks) {
     enqueue(pendingTracks);
     pendingTracks = null;
@@ -195,6 +376,7 @@ async function bumpZoom(dir) {
   await window.plex.setZoom(next);
   await refreshZoom();
   scheduleWindowSync();
+  scheduleClusterSync();
 }
 document.addEventListener("keydown", (e) => {
   // macOS uses Cmd (metaKey); Linux uses Ctrl — webamp's Win-era hotkey table
