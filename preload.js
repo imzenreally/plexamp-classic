@@ -31,6 +31,10 @@ contextBridge.exposeInMainWorld("plex", {
   onPanelToggle: (cb) => ipcRenderer.on("panel:toggle", (_e, id) => cb(id)),
   // window sizing (player window, windowed mode)
   setWindowBounds: (bounds) => ipcRenderer.send("player:setBounds", bounds),
+  // float mode: cluster bounding box (screen coords, zoom-adjusted)
+  setCluster: (cluster) => ipcRenderer.send("player:setCluster", cluster),
+  // Winamp-style right-click menu
+  openContextMenu: (x, y) => ipcRenderer.invoke("player:contextMenu", { x, y }),
   // click-through control (player window, desktop mode)
   setIgnoreMouseEvents: (ignore) => ipcRenderer.send("player:setIgnore", ignore),
   // fractional scaling

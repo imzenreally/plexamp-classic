@@ -60,9 +60,10 @@ function sessionStatePath() {
 function readPlayerMode() {
   try {
     const mode = JSON.parse(fs.readFileSync(playerModePath(), "utf8")).mode;
-    return mode === "windowed" ? "windowed" : "desktop";
+    // desktop is the legacy name for the floating overlay; it is float now.
+    return mode === "windowed" ? "windowed" : "float";
   } catch {
-    return "desktop";
+    return "float";
   }
 }
 function writePlayerMode(mode) {
@@ -93,9 +94,14 @@ function writeSessionState() {
 function updateSession(patch) {
   const next = JSON.parse(JSON.stringify(readSessionState()));
   if (patch?.player && typeof patch.player === "object") {
-    if (patch.player.mode === "desktop" || patch.player.mode === "windowed") next.player.mode = patch.player.mode;
+    if (patch.player.mode === "desktop" || patch.player.mode === "float") {
+      next.player.mode = "float";
+    } else if (patch.player.mode === "windowed") {
+      next.player.mode = "windowed";
+    }
     if (Number.isFinite(patch.player.zoomFactor)) next.player.zoomFactor = patch.player.zoomFactor;
     if (patch.player.bounds === null || typeof patch.player.bounds === "object") next.player.bounds = patch.player.bounds;
+    if (patch.player.cluster === null || typeof patch.player.cluster === "object") next.player.cluster = patch.player.cluster;
   }
   if (patch?.panels && typeof patch.panels === "object") {
     for (const key of Object.keys(next.panels)) {
@@ -123,23 +129,33 @@ function attachBoundsTracking(win, key) {
 // ---------- windows ----------
 function createPlayerWindow() {
   const saved = readSessionState();
-  // Desktop Panels mode relies on a transparent full-screen overlay with
-  // click-through forwarding. On Linux/Wayland the compositor gives the
-  // invisible overlay keyboard focus, so every keystroke lands in it —
-  // the app appears to hijack the keyboard. macOS-only until that changes.
-  const mode = process.platform === "darwin" ? saved.player.mode : "windowed";
-  if (mode === "desktop") {
+  // Float mode: one small transparent window hugging the panel cluster.
+  // Unlike the old desktop mode (a transparent FULL-screen overlay, which
+  // Wayland compositors kept handing keyboard focus, hijacking keystrokes),
+  // the float window only covers the panels themselves. Gaps inside the
+  // window are click-through; the rest of the desktop is simply not part of
+  // the window, so nothing can steal focus. Works on macOS AND Linux.
+  // "desktop" is retained as a legacy alias for float.
+  const mode = saved.player.mode === "windowed" ? "windowed" : "float";
+  if (mode === "float") {
     const wa = screen.getPrimaryDisplay().workArea;
+    // Restore the saved cluster origin; fall back to top-left of work area.
+    const clusterBounds = saved.player.cluster || null;
+    const x = clusterBounds ? clusterBounds.x : wa.x + 24;
+    const y = clusterBounds ? clusterBounds.y : wa.y + 24;
     playerWindow = new BrowserWindow({
-      x: wa.x,
-      y: wa.y,
-      width: wa.width,
-      height: wa.height,
+      x,
+      y,
+      width: clusterBounds?.width || 400,
+      height: clusterBounds?.height || 480,
       frame: false,
       transparent: true,
       hasShadow: false,
       resizable: false,
-      movable: false,
+      movable: true, // macOS: movable:false also blocks programmatic position
+      // changes; float mode relies on the renderer (no app-region: drag
+      // styles are injected in float mode), so OS-initiated drags can't
+      // happen anyway.
       backgroundColor: "#00000000",
       alwaysOnTop: saved.player.alwaysOnTop,
       skipTaskbar: true,
@@ -153,7 +169,7 @@ function createPlayerWindow() {
     playerWindow.setIgnoreMouseEvents(true, { forward: true });
     playerWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: false });
     attachLibraryHotkey(playerWindow);
-    playerWindow.loadURL("app://winamp/player.html?mode=desktop");
+    playerWindow.loadURL("app://winamp/player.html?mode=float");
   } else {
     const workArea = screen.getPrimaryDisplay().workArea;
     const restored = saved.player.bounds ? repairedBounds(saved.player.bounds, workArea) : null;
@@ -504,6 +520,53 @@ ipcMain.on("player:setBounds", (_e, { width, height }) => {
   }
 });
 
+// ---------- float mode: cluster window follows the panels ----------
+// The renderer reports the on-screen bounding box of the visible webamp
+// panels (zoom-adjusted). The main process keeps the transparent float
+// window exactly wrapped around that cluster and persists its origin so
+// panel layout survives restarts.
+ipcMain.on("player:setCluster", (_e, { x, y, width, height } = {}) => {
+  if (!playerWindow || playerWindow.isDestroyed()) return;
+  // Size is capped to the display so macOS never rejects the geometry
+  // (transparent windows larger than the screen get their setBounds calls
+  // silently clamped — position included). The renderer computes the
+  // position in screen space and clamps it to the work area itself; it MUST
+  // match what the renderer counter-shifted by, so we do not re-clamp here.
+  const nearest = screen.getDisplayMatching({ x: Math.round(x), y: Math.round(y), width: 400, height: 400 });
+  const maxW = nearest.workArea.width;
+  const maxH = nearest.workArea.height;
+  const next = {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.min(Math.max(40, Math.round(width)), maxW),
+    height: Math.min(Math.max(40, Math.round(height)), maxH),
+  };
+  if (Number.isFinite(next.x) && Number.isFinite(next.y)) {
+    try {
+      playerWindow.setBounds(next);
+      console.log(`[float] setBounds -> ${JSON.stringify(playerWindow.getBounds())}`);
+    } catch (e) {
+      console.log(`[float] setBounds THREW: ${e.message}`);
+    }
+  } else {
+    console.log(`[float] non-finite coords ignored: ${JSON.stringify({ x, y })}`);
+  }
+  clusterSyncDebounced();
+});
+
+// Debounced persistence of the cluster origin (not the full geometry —
+// webamp owns panel-relative layout; we store only where the cluster
+// sits on screen).
+let clusterSyncTimer = null;
+function clusterSyncDebounced() {
+  clearTimeout(clusterSyncTimer);
+  clusterSyncTimer = setTimeout(() => {
+    if (!playerWindow || playerWindow.isDestroyed()) return;
+    const b = playerWindow.getBounds();
+    updateSession({ player: { cluster: { x: b.x, y: b.y, width: b.width, height: b.height } } });
+  }, 400);
+}
+
 // ---------- click-through control (desktop mode) ----------
 ipcMain.on("player:setIgnore", (_e, ignore) => {
   if (playerWindow && !playerWindow.isDestroyed()) {
@@ -529,9 +592,10 @@ ipcMain.on("panel:toggle", (_e, id) => {
 // ---------- player mode toggle ----------
 ipcMain.handle("player:getMode", () => readSessionState().player.mode);
 ipcMain.handle("player:setMode", (_e, mode) => {
-  if (mode !== "desktop" && mode !== "windowed") return readSessionState().player.mode;
-  setPlayerModeAndRestart(mode);
-  return mode;
+  const normalized = mode === "windowed" ? "windowed" : mode === "float" || mode === "desktop" ? "float" : null;
+  if (!normalized) return readSessionState().player.mode;
+  setPlayerModeAndRestart(normalized);
+  return normalized;
 });
 
 // ---------- fractional scaling (zoom) ----------
@@ -547,6 +611,63 @@ ipcMain.handle("player:setZoom", (_e, factor) => {
 });
 
 ipcMain.handle("app:hasTray", () => Boolean(tray));
+
+// ---------- Winamp-style context menu (right-click on the skin) ----------
+// Same structure on every platform; pops up at the pointer. The renderer
+// listens for contextmenu events over the webamp panels and asks for this.
+ipcMain.handle("player:contextMenu", (_e, { x, y } = {}) => {
+  if (!playerWindow || playerWindow.isDestroyed()) return;
+  const saved = readSessionState();
+  const item = (label, checked, click, extra = {}) =>
+    ({ label, type: "checkbox", checked, click, ...extra });
+  const sep = { type: "separator" };
+  const context = Menu.buildFromTemplate([
+    item("Playlist", Boolean(saved.panels.playlist), () => sendToPlayer("panel:toggle", "playlist")),
+    item("Equalizer", Boolean(saved.panels.equalizer), () => sendToPlayer("panel:toggle", "equalizer")),
+    item("Visualizer (MilkDrop)", Boolean(saved.panels.milkdrop), () => sendToPlayer("panel:toggle", "milkdrop")),
+    sep,
+    item("Media Library", Boolean(saved.library.open), () => toggleLibrary()),
+    item("Always on Top", Boolean(saved.player.alwaysOnTop), () => {
+      const alwaysOnTop = Boolean(playerWindow && !playerWindow.isDestroyed() && !playerWindow.isAlwaysOnTop());
+      playerWindow?.setAlwaysOnTop(alwaysOnTop);
+      updateSession({ player: { alwaysOnTop } });
+      rebuildMenu();
+      rebuildTray();
+    }),
+    sep,
+    {
+      label: "Scale",
+      submenu: [1, 1.15, 1.25, 1.5, 1.75, 2, 0.75].map((f) => ({
+        label: f === 1 ? "100% (normal)" : `${Math.round(f * 100)}%`,
+        type: "checkbox",
+        checked: Math.abs(saved.player.zoomFactor - f) < 0.01,
+        click: () => {
+          updateSession({ player: { zoomFactor: f } });
+          playerWindow?.webContents.setZoomFactor(f);
+          rebuildMenu();
+          rebuildTray();
+        },
+      })),
+    },
+    {
+      label: "Player Mode",
+      submenu: [
+        item("Floating Panels", saved.player.mode !== "windowed", () => setPlayerModeAndRestart("float")),
+        item("Windowed Player", saved.player.mode === "windowed", () => setPlayerModeAndRestart("windowed")),
+      ],
+    },
+    sep,
+    {
+      label: "Quit Plexamp Classic",
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]);
+  console.log(`[float] contextMenu popup at ${JSON.stringify({ x, y })}`);
+  context.popup({ window: playerWindow, x, y });
+});
 
 // ---------- env passthrough ----------
 ipcMain.handle("env:section", () => ENV_SECTION || null);
@@ -605,10 +726,8 @@ function rebuildTray() {
     {
       label: "Player Mode",
       submenu: [
+        item("Floating Panels", saved.player.mode === "float", () => setPlayerModeAndRestart("float")),
         item("Windowed Player", saved.player.mode === "windowed", () => setPlayerModeAndRestart("windowed")),
-        ...(process.platform === "darwin"
-          ? [item("Desktop Panels", saved.player.mode === "desktop", () => setPlayerModeAndRestart("desktop"))]
-          : []),
       ],
     },
     sep,
@@ -698,12 +817,11 @@ function rebuildMenu() {
         },
         { type: "separator" },
         {
-          label: "Desktop Panels",
+          label: "Floating Panels",
           type: "checkbox",
-          visible: process.platform === "darwin",
-          checked: saved.player.mode === "desktop",
+          checked: saved.player.mode !== "windowed",
           accelerator: "CmdOrCtrl+P",
-          click: () => setPlayerModeAndRestart("desktop"),
+          click: () => setPlayerModeAndRestart("float"),
         },
         {
           label: "Windowed Player",
@@ -834,6 +952,9 @@ app.on("before-quit", () => {
     updateSession({ player: { zoomFactor: playerWindow.webContents.getZoomFactor() } });
     if (readSessionState().player.mode === "windowed") {
       updateSession({ player: { bounds: playerWindow.getBounds() } });
+    } else {
+      const b = playerWindow.getBounds();
+      updateSession({ player: { cluster: { x: b.x, y: b.y, width: b.width, height: b.height } } });
     }
   }
 });
