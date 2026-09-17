@@ -45,7 +45,15 @@ if (MODE !== "windowed") {
     pointerInside = insideAnyPanel(e.clientX, e.clientY);
     if (!pointerDown) setIgnore(!pointerInside);
   });
-  document.addEventListener("mousedown", () => (pointerDown = true), true);
+  document.addEventListener("mousedown", (e) => {
+    pointerDown = true;
+    // Float pre-grow: webamp pins panel store positions at >= 0 relative to
+    // the host origin — dragging left/up stops dead at the host edge. Grow
+    // the window's left/top edge AT DRAG START (before webamp's drag math
+    // engages — no feedback possible) so there is headroom in every
+    // direction. The post-drag rewrap settles the exact box.
+    if (MODE === "float" && e.button === 0 && scheduleClusterSync.preGrow) scheduleClusterSync.preGrow();
+  }, true);
   document.addEventListener("mouseup", () => {
     pointerDown = false;
     if (!pointerInside) setIgnore(true);
@@ -133,10 +141,59 @@ async function getDisplays() {
   try {
     displaysCache = await window.plex.getDisplays();
     displaysCacheAt = now;
+    window.__displaysCache = displaysCache; // sync fallback for drag-start pre-grow
   } catch {
     return [window.screen];
   }
   return displaysCache;
+}
+
+// Pre-grow the window at drag START: extend all four edges by the margin
+// (clamped to the display union), keeping the PANELS visually fixed by
+// counter-shifting the host. Safe at mousedown because webamp's drag math
+// has not engaged yet (its anchor read happens on its own pointerdown
+// handler, which runs after ours — and even if it read first, screen-space
+// deltas are invariant to window moves).
+function preGrowCluster() {
+  if (MODE !== "float" || !window.plex.setCluster) return;
+  const panels = visiblePanels();
+  if (!panels.length) return;
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+  for (const el of panels) {
+    const r = el.getBoundingClientRect();
+    x1 = Math.min(x1, r.left); y1 = Math.min(y1, r.top);
+    x2 = Math.max(x2, r.right); y2 = Math.max(y2, r.bottom);
+  }
+  const displays = window.__displaysCache || [{ workArea: { x: window.screen.availLeft, y: window.screen.availTop, width: window.screen.availWidth, height: window.screen.availHeight } }];
+  let UL = Infinity, UT = Infinity, UR = -Infinity, UB = -Infinity;
+  for (const d of displays) {
+    const wa = d.workArea;
+    UL = Math.min(UL, wa.x); UT = Math.min(UT, wa.y);
+    UR = Math.max(UR, wa.x + wa.width); UB = Math.max(UB, wa.y + wa.height);
+  }
+  const M = FLOAT_MARGIN;
+  // target window box: cluster grown by M on all sides, clamped to union
+  const tx = Math.max(UL, Math.round(window.screenX + x1 * currentZoom - M));
+  const ty = Math.max(UT, Math.round(window.screenY + y1 * currentZoom - M));
+  const tw = Math.min(Math.round((x2 - x1) * currentZoom + M * 2), UR - tx);
+  const th = Math.min(Math.round((y2 - y1) * currentZoom + M * 2), UB - ty);
+  const dx = tx - window.screenX;
+  const dy = ty - window.screenY;
+  if (dx === 0 && dy === 0 && tw === window.outerWidth && th === window.outerHeight) return;
+  lastCluster = { x: tx, y: ty, width: tw, height: th };
+  window.plex.setCluster({ ...lastCluster });
+  shiftHost(-dx / currentZoom, -dy / currentZoom);
+}
+
+// Move the #webamp host by (dx, dy) CSS px. Panels stay visually fixed on
+// screen when the window moves by the opposite amount.
+function shiftHost(dx, dy) {
+  const host = document.getElementById("webamp");
+  if (!host) return;
+  const cur = host.dataset.shift ? JSON.parse(host.dataset.shift) : { x: 0, y: 0 };
+  cur.x += dx; cur.y += dy;
+  host.dataset.shift = JSON.stringify(cur);
+  host.style.transform = `translate(${cur.x}px, ${cur.y}px)`;
 }
 
 async function syncCluster({ live = false } = {}) {
@@ -202,13 +259,10 @@ async function syncCluster({ live = false } = {}) {
   // itself — transforming the slot does nothing to the panels.
   const host = document.getElementById("webamp") || document.getElementById("webamp-slot");
   if (host && host.id !== "webamp-slot") {
-    const cur = host.dataset.shift ? JSON.parse(host.dataset.shift) : { x: 0, y: 0 };
-    cur.x -= dx / currentZoom;
-    cur.y -= dy / currentZoom;
-    host.dataset.shift = JSON.stringify(cur);
-    host.style.transform = `translate(${cur.x}px, ${cur.y}px)`;
+    shiftHost(-dx / currentZoom, -dy / currentZoom);
   }
 }
+scheduleClusterSync.preGrow = preGrowCluster;
 // Webamp restyles its windows constantly (drag, shade, resize); style/class
 // mutations are the cheapest signal that the cluster box may have changed.
 let floatObserver = null;
@@ -368,6 +422,22 @@ async function initWebamp() {
       scheduleRewrap();
     });
   }
+  // ---------- eject button -> Media Library ----------
+  // Webamp's eject opens a local-file picker, which is useless here (the app
+  // streams from Plex). Intercept at capture phase so webamp's own handler
+  // never fires, and toggle the Media Library instead.
+  document.addEventListener(
+    "mousedown",
+    (e) => {
+      const eject = e.target && e.target.closest ? e.target.closest("#eject") : null;
+      if (!eject) return;
+      e.preventDefault();
+      e.stopPropagation();
+      window.plex.toggleLibrary();
+    },
+    true
+  );
+
   // ---------- Winamp-style right-click menu ----------
   // Preempts webamp's generic panel menu (which lacks app-level items);
   // webamp's own menu stays reachable via the skin's O button (click).
