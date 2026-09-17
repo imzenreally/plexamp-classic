@@ -1,6 +1,6 @@
 {
   "name": "plexamp-classic",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Old-school Winamp-style desktop player with Plex library integration and federation",
   "main": "main.js",
   "type": "commonjs",
