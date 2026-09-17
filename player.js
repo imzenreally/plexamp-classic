@@ -74,10 +74,27 @@ async function refreshZoom() {
   currentZoom = (await window.plex.getZoom()) || 1;
 }
 let clusterTimer = null;
+let lastLiveGrow = 0;
 function scheduleClusterSync(live) {
   if (MODE !== "float") return;
+  if (live) {
+    // LEADING-EDGE throttle: fires on the FIRST mutation of a burst, then at
+    // most every 33ms. A trailing debounce starves here — real drags fire
+    // mutations every animation frame, endlessly restarting the timer, so
+    // the window never grew mid-drag (the "invisible wall" bug).
+    const now = performance.now();
+    if (now - lastLiveGrow < 33) {
+      clearTimeout(clusterTimer);
+      clusterTimer = setTimeout(() => { lastLiveGrow = performance.now(); syncCluster({ live: true }); }, 33 - (now - lastLiveGrow));
+      return;
+    }
+    lastLiveGrow = performance.now();
+    clearTimeout(clusterTimer);
+    syncCluster({ live: true });
+    return;
+  }
   clearTimeout(clusterTimer);
-  clusterTimer = setTimeout(() => syncCluster({ live }), live ? 40 : 0);
+  clusterTimer = setTimeout(() => syncCluster({ live }), 0);
 }
 // Full rewraps run on a TRAILING debounce: webamp commits its final panel
 // position some time AFTER pointerup, and a rewrap that fires first shifts
@@ -104,7 +121,25 @@ function visiblePanels() {
 // a live read races the compositor and compounds errors.
 let lastCluster = null; // { x, y, width, height } as sent to player:setCluster
 
-function syncCluster({ live = false } = {}) {
+// All displays' work areas, from the main process. Cached briefly so drag
+// bursts don't hammer IPC, but never trusted across a drag — displays are
+// rare to change, but a stale union here would clamp the window wrongly.
+let displaysCache = null;
+let displaysCacheAt = 0;
+async function getDisplays() {
+  if (!window.plex.getDisplays) return [window.screen];
+  const now = performance.now();
+  if (displaysCache && now - displaysCacheAt < 5000) return displaysCache;
+  try {
+    displaysCache = await window.plex.getDisplays();
+    displaysCacheAt = now;
+  } catch {
+    return [window.screen];
+  }
+  return displaysCache;
+}
+
+async function syncCluster({ live = false } = {}) {
   if (MODE !== "float" || !window.plex.setCluster) return;
   const panels = visiblePanels();
   if (!panels.length) return;
@@ -116,23 +151,40 @@ function syncCluster({ live = false } = {}) {
   }
   if (live) {
     // Grow-only: keep the origin; extend edges so nothing clips mid-drag.
-    // Size is capped to the display so macOS never rejects the call.
-    const scr = window.screen;
+    // Size is capped to the union of all displays (not just the current
+    // one) so the window can grow TOWARD another display while dragging.
+    const displays = await getDisplays();
+    let UL = Infinity, UT = Infinity, UR = -Infinity, UB = -Infinity;
+    for (const d of displays) {
+      const wa = d.workArea || { x: d.left || 0, y: d.top || 0, width: d.width, height: d.height };
+      UL = Math.min(UL, wa.x); UT = Math.min(UT, wa.y);
+      UR = Math.max(UR, wa.x + wa.width); UB = Math.max(UB, wa.y + wa.height);
+    }
     const base = lastCluster || { x: window.screenX, y: window.screenY, width: window.outerWidth, height: window.outerHeight };
     lastCluster = {
       x: base.x,
       y: base.y,
-      width: Math.min(Math.max(base.width, Math.ceil((x2 + 80) * currentZoom)), scr.availWidth),
-      height: Math.min(Math.max(base.height, Math.ceil((y2 + 80) * currentZoom)), scr.availHeight),
+      width: Math.min(Math.max(base.width, Math.ceil((x2 + 80) * currentZoom)), UR - UL),
+      height: Math.min(Math.max(base.height, Math.ceil((y2 + 80) * currentZoom)), UB - UT),
     };
     window.plex.setCluster({ ...lastCluster });
     return;
   }
   // Full re-wrap, in SCREEN space (valid at rest — full syncs only run when
   // no drag is in flight): wrap the cluster with a FLOAT_MARGIN on every
-  // side, clamp to the current display's work area, move the window there,
-  // then counter-translate #webamp by the actual move so panels stay put.
-  const scr = window.screen;
+  // side, clamp to the UNION of all displays' work areas (panels can be
+  // dragged across displays — the window must be allowed to follow onto
+  // the target display instead of being pinned to the birth display),
+  // move the window there, then counter-translate #webamp by the actual
+  // move so panels stay put.
+  const displays = await getDisplays();
+  let UL = Infinity, UT = Infinity, UR = -Infinity, UB = -Infinity;
+  for (const d of displays) {
+    const wa = d.workArea || { x: d.left || 0, y: d.top || 0, width: d.width, height: d.height };
+    UL = Math.min(UL, wa.x); UT = Math.min(UT, wa.y);
+    UR = Math.max(UR, wa.x + wa.width); UB = Math.max(UB, wa.y + wa.height);
+  }
+  const scr = { availLeft: UL, availTop: UT, availWidth: UR - UL, availHeight: UB - UT };
   const clusterLeft = window.screenX + x1 * currentZoom;
   const clusterTop = window.screenY + y1 * currentZoom;
   const clusterW = (x2 - x1) * currentZoom;
