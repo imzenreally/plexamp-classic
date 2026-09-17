@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("plex", {
+  // platform (renderer has no `process` under contextIsolation)
+  platform: process.platform,
   // auth
   authStatus: () => ipcRenderer.invoke("auth:status"),
   beginLogin: () => ipcRenderer.invoke("auth:beginLogin"),
@@ -37,9 +39,11 @@ contextBridge.exposeInMainWorld("plex", {
   // mode
   getMode: () => ipcRenderer.invoke("player:getMode"),
   setMode: (mode) => ipcRenderer.invoke("player:setMode", mode),
-  // durable session state (player panel visibility + Electron window state)
+  // session state (player panel visibility + Electron window state)
   getSession: () => ipcRenderer.invoke("session:get"),
   updateSession: (patch) => ipcRenderer.invoke("session:update", patch),
+  // linux tray presence (used by tests)
+  hasTray: () => ipcRenderer.invoke("app:hasTray"),
   // env passthrough
   getEnvSection: () => ipcRenderer.invoke("env:section"),
   hasLocalPresetPack: () => ipcRenderer.invoke("presets:hasLocalPack"),

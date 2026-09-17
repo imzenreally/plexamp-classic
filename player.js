@@ -160,7 +160,10 @@ async function initWebamp() {
   }
 }
 
-// ---------- fractional scaling (zoom) — Cmd+= / Cmd+- / Cmd+0 ----------
+// ---------- fractional scaling (zoom) — Cmd+= / Cmd+- / Cmd+0 (macOS),
+// Ctrl+= / Ctrl+- / Ctrl+0 (Linux). Webamp's Win-era hotkey table only
+// checks ctrlKey, so on Linux both handlers would fire for Ctrl+=;
+// the renderer-side handler therefore only adds Ctrl on non-macOS.
 const ZOOM_STEPS = [0.75, 1, 1.15, 1.25, 1.5, 1.75, 2];
 async function bumpZoom(dir) {
   const cur = (await window.plex.getZoom()) || 1;
@@ -175,10 +178,14 @@ async function bumpZoom(dir) {
   await window.plex.setZoom(next);
 }
 document.addEventListener("keydown", (e) => {
-  if (!e.metaKey) return;
-  // ⌘L belongs to the app menu (Media Library). Webamp's Win-era hotkey table
-  // only checks ctrlKey, so ⌘L leaks into its bare-L handler and ALSO pops the
-  // local file picker. Swallow it at capture phase before webamp sees it.
+  // macOS uses Cmd (metaKey); Linux uses Ctrl — webamp's Win-era hotkey table
+  // also binds Ctrl, so the renderer handler stays Cmd-only on macOS to avoid
+  // double-firing there.
+  const mod = window.plex.platform === "darwin" ? e.metaKey : e.ctrlKey;
+  if (!mod) return;
+  // ⌘L/Ctrl+L belongs to the app menu (Media Library). Webamp's Win-era hotkey
+  // table only checks ctrlKey, so ⌘L leaks into its bare-L handler and ALSO pops
+  // the local file picker. Swallow it at capture phase before webamp sees it.
   if (e.key === "l" || e.key === "L") {
     e.preventDefault();
     e.stopPropagation();
