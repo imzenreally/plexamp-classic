@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld("plex", {
   setWindowBounds: (bounds) => ipcRenderer.send("player:setBounds", bounds),
   // float mode: cluster bounding box (screen coords, zoom-adjusted)
   setCluster: (cluster) => ipcRenderer.send("player:setCluster", cluster),
+  // all displays' work areas, for multi-monitor union clamping
+  getDisplays: () => ipcRenderer.invoke("player:getDisplays"),
   // Winamp-style right-click menu
   openContextMenu: (x, y) => ipcRenderer.invoke("player:contextMenu", { x, y }),
   // click-through control (player window, desktop mode)

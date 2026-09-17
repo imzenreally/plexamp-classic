@@ -527,14 +527,13 @@ ipcMain.on("player:setBounds", (_e, { width, height }) => {
 // panel layout survives restarts.
 ipcMain.on("player:setCluster", (_e, { x, y, width, height } = {}) => {
   if (!playerWindow || playerWindow.isDestroyed()) return;
-  // Size is capped to the display so macOS never rejects the geometry
-  // (transparent windows larger than the screen get their setBounds calls
-  // silently clamped — position included). The renderer computes the
-  // position in screen space and clamps it to the work area itself; it MUST
-  // match what the renderer counter-shifted by, so we do not re-clamp here.
-  const nearest = screen.getDisplayMatching({ x: Math.round(x), y: Math.round(y), width: 400, height: 400 });
-  const maxW = nearest.workArea.width;
-  const maxH = nearest.workArea.height;
+  // Size is capped to the UNION of all displays' work areas. The float
+  // window legitimately spans displays while panels are dragged between
+  // them — capping to the single nearest display (the old behavior)
+  // re-introduced the invisible wall on multi-monitor setups.
+  const all = screen.getAllDisplays().map((d) => d.workArea);
+  const maxW = Math.max(...all.map((wa) => wa.width));
+  const maxH = Math.max(...all.map((wa) => wa.height));
   const next = {
     x: Math.round(x),
     y: Math.round(y),
@@ -553,6 +552,10 @@ ipcMain.on("player:setCluster", (_e, { x, y, width, height } = {}) => {
   }
   clusterSyncDebounced();
 });
+
+ipcMain.handle("player:getDisplays", () =>
+  screen.getAllDisplays().map((d) => ({ workArea: d.workArea }))
+);
 
 // Debounced persistence of the cluster origin (not the full geometry —
 // webamp owns panel-relative layout; we store only where the cluster
