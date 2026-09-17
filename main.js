@@ -123,7 +123,11 @@ function attachBoundsTracking(win, key) {
 // ---------- windows ----------
 function createPlayerWindow() {
   const saved = readSessionState();
-  const mode = saved.player.mode;
+  // Desktop Panels mode relies on a transparent full-screen overlay with
+  // click-through forwarding. On Linux/Wayland the compositor gives the
+  // invisible overlay keyboard focus, so every keystroke lands in it —
+  // the app appears to hijack the keyboard. macOS-only until that changes.
+  const mode = process.platform === "darwin" ? saved.player.mode : "windowed";
   if (mode === "desktop") {
     const wa = screen.getPrimaryDisplay().workArea;
     playerWindow = new BrowserWindow({
@@ -222,6 +226,10 @@ function attachLibraryHotkey(win) {
     if (input.control && (input.key === "l" || input.key === "L")) {
       event.preventDefault();
       toggleLibrary();
+    } else if (input.control && (input.key === "q" || input.key === "Q")) {
+      event.preventDefault();
+      isQuitting = true;
+      app.quit();
     }
   });
 }
@@ -597,9 +605,19 @@ function rebuildTray() {
     {
       label: "Player Mode",
       submenu: [
-        item("Desktop Panels", saved.player.mode === "desktop", () => setPlayerModeAndRestart("desktop")),
         item("Windowed Player", saved.player.mode === "windowed", () => setPlayerModeAndRestart("windowed")),
+        ...(process.platform === "darwin"
+          ? [item("Desktop Panels", saved.player.mode === "desktop", () => setPlayerModeAndRestart("desktop"))]
+          : []),
       ],
+    },
+    sep,
+    {
+      label: "Quit",
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
     },
   ]);
   if (!tray) {
@@ -682,6 +700,7 @@ function rebuildMenu() {
         {
           label: "Desktop Panels",
           type: "checkbox",
+          visible: process.platform === "darwin",
           checked: saved.player.mode === "desktop",
           accelerator: "CmdOrCtrl+P",
           click: () => setPlayerModeAndRestart("desktop"),
