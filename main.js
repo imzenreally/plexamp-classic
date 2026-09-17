@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, session, protocol, net, globalShortcut, Menu, screen } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, session, protocol, net, globalShortcut, Menu, screen, Tray } = require("electron");
 const fs = require("fs");
 const path = require("path");
 const { pathToFileURL } = require("url");
@@ -148,6 +148,7 @@ function createPlayerWindow() {
     });
     playerWindow.setIgnoreMouseEvents(true, { forward: true });
     playerWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: false });
+    attachLibraryHotkey(playerWindow);
     playerWindow.loadURL("app://winamp/player.html?mode=desktop");
   } else {
     const workArea = screen.getPrimaryDisplay().workArea;
@@ -168,6 +169,7 @@ function createPlayerWindow() {
       },
     });
     attachBoundsTracking(playerWindow, "player");
+    attachLibraryHotkey(playerWindow);
     playerWindow.loadURL("app://winamp/player.html?mode=windowed");
   }
   playerWindow.webContents.once("did-finish-load", () => {
@@ -207,6 +209,20 @@ function createLibraryWindow() {
     if (!isQuitting) updateSession({ library: { open: false } });
     libraryWindow = null;
     rebuildMenu();
+  });
+}
+
+// Linux: frameless windows mean no menu bar is shown, so the View menu's
+// Ctrl+L accelerator never fires there (GTK registers accelerators only
+// with a visible menu). Handle it at the window level instead.
+function attachLibraryHotkey(win) {
+  if (process.platform !== "linux") return;
+  win.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    if (input.control && (input.key === "l" || input.key === "L")) {
+      event.preventDefault();
+      toggleLibrary();
+    }
   });
 }
 
@@ -522,6 +538,8 @@ ipcMain.handle("player:setZoom", (_e, factor) => {
   return factor;
 });
 
+ipcMain.handle("app:hasTray", () => Boolean(tray));
+
 // ---------- env passthrough ----------
 ipcMain.handle("env:section", () => ENV_SECTION || null);
 ipcMain.handle("presets:hasLocalPack", () =>
@@ -531,11 +549,78 @@ ipcMain.handle("presets:hasLocalPack", () =>
 // ---------- menu ----------
 // View menu: checkbox "tiles" for every webamp panel + Media Library, with
 // live checkmark state driven by the player's panel store and session state.
+// On Linux the app menu bar never shows (frameless windows), so the same
+// controls are exposed through a system tray menu.
 
 function sendToPlayer(channel, ...args) {
   if (playerWindow && !playerWindow.isDestroyed()) {
     playerWindow.webContents.send(channel, ...args);
   }
+}
+
+// Linux tray: a compact version of the View menu — panels, library,
+// player mode, scale, always-on-top.
+let tray = null;
+function rebuildTray() {
+  if (process.platform !== "linux") return;
+  const saved = readSessionState();
+  const item = (label, checked, click, extra = {}) => ({ label, type: "checkbox", checked, click, ...extra });
+  const sep = { type: "separator" };
+  const context = Menu.buildFromTemplate([
+    item("Playlist", Boolean(saved.panels.playlist), () => sendToPlayer("panel:toggle", "playlist")),
+    item("Equalizer", Boolean(saved.panels.equalizer), () => sendToPlayer("panel:toggle", "equalizer")),
+    item("Visualizer (MilkDrop)", Boolean(saved.panels.milkdrop), () => sendToPlayer("panel:toggle", "milkdrop")),
+    sep,
+    item("Media Library", Boolean(saved.library.open), () => toggleLibrary()),
+    item("Always on Top", Boolean(saved.player.alwaysOnTop), () => {
+      const alwaysOnTop = Boolean(playerWindow && !playerWindow.isDestroyed() && !playerWindow.isAlwaysOnTop());
+      playerWindow?.setAlwaysOnTop(alwaysOnTop);
+      updateSession({ player: { alwaysOnTop } });
+      rebuildMenu();
+      rebuildTray();
+    }),
+    sep,
+    {
+      label: "Scale",
+      submenu: [1, 1.15, 1.25, 1.5, 1.75, 2, 0.75].map((f) => ({
+        label: f === 1 ? "100% (normal)" : `${Math.round(f * 100)}%`,
+        type: "checkbox",
+        checked: Math.abs(saved.player.zoomFactor - f) < 0.01,
+        click: () => {
+          updateSession({ player: { zoomFactor: f } });
+          playerWindow?.webContents.setZoomFactor(f);
+          rebuildMenu();
+          rebuildTray();
+        },
+      })),
+    },
+    {
+      label: "Player Mode",
+      submenu: [
+        item("Desktop Panels", saved.player.mode === "desktop", () => setPlayerModeAndRestart("desktop")),
+        item("Windowed Player", saved.player.mode === "windowed", () => setPlayerModeAndRestart("windowed")),
+      ],
+    },
+  ]);
+  if (!tray) {
+    // Tray icon candidates: the icon electron-builder places next to the
+    // executable in packaged builds, the resources dir, or the repo's icon
+    // set when running from source. If none exist, skip the tray rather
+    // than crash — the frameless player still runs.
+    const candidates = [
+      path.join(path.dirname(process.execPath), "plexamp-classic.png"),
+      app.isPackaged ? path.join(process.resourcesPath, "build", "icons", "512x512.png") : null,
+      path.join(__dirname, "build", "icons", "512x512.png"),
+    ].filter(Boolean);
+    const iconPath = candidates.find((p) => fs.existsSync(p));
+    if (!iconPath) {
+      console.warn("tray: no icon found; skipping system tray");
+      return;
+    }
+    tray = new Tray(iconPath);
+    tray.setToolTip("Plexamp Classic");
+  }
+  tray.setContextMenu(context);
 }
 
 function rebuildMenu() {
@@ -626,6 +711,7 @@ function rebuildMenu() {
     { role: "windowMenu" },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  rebuildTray();
 }
 
 app.whenReady().then(() => {
