@@ -50,15 +50,30 @@ if (MODE === "desktop") {
 }
 
 // ---------- mode: windowed bounds tracking ----------
+// NOTE: getBoundingClientRect reports UNZOOMED CSS px under webContents zoom,
+// so dimensions must be scaled by the current zoom factor or the window
+// clips its content at >100%.
+let currentZoom = 1;
+async function refreshZoom() {
+  currentZoom = (await window.plex.getZoom()) || 1;
+}
+let windowSyncTimer = null;
+function scheduleWindowSync() {
+  if (MODE !== "windowed") return;
+  clearTimeout(windowSyncTimer);
+  windowSyncTimer = setTimeout(syncWindowSize, 200);
+}
 function syncWindowSize() {
   if (MODE !== "windowed") return;
-  const els = [...document.querySelectorAll("#webamp div")].filter((el) => {
+  const all = [...document.querySelectorAll("#webamp div")].filter((el) => {
     if (el.id === "webamp") return false;
     const s = getComputedStyle(el);
     if (s.position !== "absolute") return false;
     if (el.offsetWidth < 100 || el.offsetHeight < 40) return false;
     return true;
-  }).filter((el) => !els_some(els, el));
+  });
+  // Drop descendants: a panel's children are positioned inside it, not panels.
+  const els = all.filter((el) => !all.some((o) => o !== el && o.contains(el)));
   if (!els.length) return;
   let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
   for (const el of els) {
@@ -67,13 +82,11 @@ function syncWindowSize() {
     x2 = Math.max(x2, r.right); y2 = Math.max(y2, r.bottom);
   }
   window.plex.setWindowBounds({
-    width: Math.max(700, Math.ceil(x2 - x1)),
-    height: Math.ceil(y2 - y1),
+    // Fit the cluster; the 700px floor from early development left a phantom
+    // 425px of empty window beside a lone main panel.
+    width: Math.max(275, Math.ceil((x2 - x1) * currentZoom)),
+    height: Math.ceil((y2 - y1) * currentZoom) + 8,
   });
-}
-
-function els_some(els, el) {
-  return els.some((o) => o !== el && o.contains(el));
 }
 
 // ---------- Webamp panel session state ----------
@@ -140,7 +153,10 @@ async function initWebamp() {
   await webamp.renderWhenReady(document.getElementById("webamp-slot"));
   const savedSession = await window.plex.getSession();
   restorePanelState(savedSession.panels);
-  webamp.store.subscribe(schedulePanelStateSave);
+  webamp.store.subscribe(() => {
+    schedulePanelStateSave();
+    scheduleWindowSync(); // panel toggles change the cluster size
+  });
   if (MODE === "windowed") {
     // drag regions for the OS window + bounds sync
     const style = document.createElement("style");
@@ -151,6 +167,7 @@ async function initWebamp() {
       #webamp .context-menu, #webamp [role="menu"] { -webkit-app-region: no-drag; }
     `;
     document.head.appendChild(style);
+    await refreshZoom();
     syncWindowSize();
     setTimeout(syncWindowSize, 800);
   }
@@ -176,6 +193,8 @@ async function bumpZoom(dir) {
     next = ZOOM_STEPS[Math.min(ZOOM_STEPS.length - 1, Math.max(0, at + dir))];
   }
   await window.plex.setZoom(next);
+  await refreshZoom();
+  scheduleWindowSync();
 }
 document.addEventListener("keydown", (e) => {
   // macOS uses Cmd (metaKey); Linux uses Ctrl — webamp's Win-era hotkey table
