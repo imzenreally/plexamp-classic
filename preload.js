@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld("plex", {
   onMediaKey: (cb) => ipcRenderer.on("media", (_e, action) => cb(action)),
   // library -> player enqueue
   enqueueTracks: (tracks) => ipcRenderer.send("library:enqueue", tracks),
+  // player -> library toggle (eject button / hotkey)
+  toggleLibrary: () => ipcRenderer.invoke("library:toggle"),
   onEnqueue: (cb) => ipcRenderer.on("player:enqueue", (_e, tracks) => cb(tracks)),
   // webamp panel visibility -> menu checkmarks (player -> main)
   sendPanelsChanged: (panels) => ipcRenderer.send("panels:changed", panels),

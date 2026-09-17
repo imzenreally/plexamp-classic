@@ -236,13 +236,17 @@ function createLibraryWindow() {
 // Ctrl+L accelerator never fires there (GTK registers accelerators only
 // with a visible menu). Handle it at the window level instead.
 function attachLibraryHotkey(win) {
-  if (process.platform !== "linux") return;
+  // before-input-event fires inside webContents regardless of app
+  // activation state — on ALL platforms. In float mode the app often isn't
+  // frontmost (skipTaskbar, no activation on panel click), so menu
+  // accelerators are unreliable; this path always works.
   win.webContents.on("before-input-event", (event, input) => {
     if (input.type !== "keyDown") return;
-    if (input.control && (input.key === "l" || input.key === "L")) {
+    const meta = input.meta || input.control;
+    if (meta && (input.key === "l" || input.key === "L")) {
       event.preventDefault();
       toggleLibrary();
-    } else if (input.control && (input.key === "q" || input.key === "Q")) {
+    } else if (meta && (input.key === "q" || input.key === "Q")) {
       event.preventDefault();
       isQuitting = true;
       app.quit();
@@ -251,8 +255,22 @@ function attachLibraryHotkey(win) {
 }
 
 function toggleLibrary() {
-  if (libraryWindow && !libraryWindow.isDestroyed()) libraryWindow.close();
-  else createLibraryWindow();
+  if (libraryWindow && !libraryWindow.isDestroyed()) {
+    // Toggle semantics that can't strand the user: if the window exists but
+    // isn't visible (minimized, another Space, off-screen), bring it to the
+    // front instead of closing it. Only a *visible, focused* window toggles
+    // closed. ⌘L must never feel like "nothing happened".
+    const visible = libraryWindow.isVisible() && libraryWindow.isFocused();
+    if (visible) {
+      libraryWindow.close();
+    } else {
+      if (libraryWindow.isMinimized()) libraryWindow.restore();
+      libraryWindow.show();
+      libraryWindow.focus();
+    }
+  } else {
+    createLibraryWindow();
+  }
   rebuildMenu();
 }
 
@@ -556,6 +574,9 @@ ipcMain.on("player:setCluster", (_e, { x, y, width, height } = {}) => {
 ipcMain.handle("player:getDisplays", () =>
   screen.getAllDisplays().map((d) => ({ workArea: d.workArea }))
 );
+
+// Eject-button / hotkey library toggle (same semantics as the menu item).
+ipcMain.handle("library:toggle", () => toggleLibrary());
 
 // Debounced persistence of the cluster origin (not the full geometry —
 // webamp owns panel-relative layout; we store only where the cluster
