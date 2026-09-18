@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;" />
+<title>Winamp Equalizer</title>
+<style>
+  :root { --bg: #000; --text: #00ff00; --bevel: #efefef; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; background: #000;
+    font-family: "Tahoma", "MS Sans Serif", sans-serif; font-size: 10px;
+    overflow: hidden; user-select: none; cursor: default;
+  }
+  .title-bar {
+    height: 14px; line-height: 14px;
+    background: linear-gradient(180deg, var(--bevel) 0%, #a0a0a0 50%, #606060 100%);
+    -webkit-app-region: drag;
+    display: flex; align-items: center; justify-content: flex-end;
+    gap: 4px; padding-right: 4px;
+  }
+  .title-bar .sys-btn {
+    width: 9px; height: 9px; -webkit-app-region: no-drag;
+    border: 1px solid #000; background: var(--bevel); cursor: pointer;
+  }
+  .title-bar .sys-btn.close { background: #b04a3a; }
+  .eq-body {
+    padding: 6px 8px; display: flex; flex-direction: column; gap: 6px;
+    background: #000; height: calc(100% - 14px);
+  }
+  .toggles { display: flex; gap: 8px; align-items: center; }
+  .toggle {
+    padding: 2px 8px; background: var(--bevel);
+    border: 1px solid #000; cursor: pointer; font-weight: bold; font-size: 9px;
+  }
+  .toggle.on { background: #00c800; color: #fff; }
+  .bands { display: flex; gap: 4px; flex: 1; align-items: stretch; }
+  .band { display: flex; flex-direction: column; align-items: center; gap: 3px; flex: 1; }
+  .band input[type="range"] {
+    writing-mode: vertical-lr; direction: rtl;
+    width: 18px; flex: 1; accent-color: #00c800;
+  }
+  .band .freq { color: var(--text); font-size: 8px; }
+  .preamp input[type="range"] { accent-color: #ffff00; }
+</style>
+</head>
+<body>
+  <div class="title-bar">
+    <div class="sys-btn close" title="Close"></div>
+  </div>
+  <div class="eq-body">
+    <div class="toggles">
+      <div class="toggle" id="tg-on">ON</div>
+      <div class="toggle" id="tg-auto">AUTO</div>
+      <div class="band preamp">
+        <input type="range" id="preamp" min="0" max="100" value="50" />
+        <span class="freq">PRE</span>
+      </div>
+    </div>
+    <div class="bands" id="bands"></div>
+  </div>
+  <script src="equalizer-window.js"></script>
+</body>
+</html>

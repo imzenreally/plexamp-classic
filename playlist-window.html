@@ -1,0 +1,97 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:;" />
+<title>Winamp Playlist</title>
+<style>
+  :root {
+    --bg: #000000;
+    --panel: #3d3d3d;
+    --text: #00ff00;
+    --text-dim: #00c800;
+    --sel: #0000c8;
+    --bevel: #efefef;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg);
+    font-family: "Pixelated MS Sans", "Tahoma", "MS Sans Serif", sans-serif;
+    font-size: 11px;
+    overflow: hidden;
+    user-select: none;
+    cursor: default;
+  }
+  .title-bar {
+    height: 14px; line-height: 14px;
+    background: linear-gradient(180deg, var(--bevel) 0%, #a0a0a0 50%, #606060 100%);
+    -webkit-app-region: drag;
+    display: flex; align-items: center; justify-content: flex-end;
+    gap: 4px; padding-right: 4px;
+  }
+  .title-bar .sys-btn {
+    width: 9px; height: 9px;
+    -webkit-app-region: no-drag;
+    border: 1px solid #000;
+    background: var(--bevel);
+    cursor: pointer;
+  }
+  .title-bar .sys-btn.close { background: #b04a3a; }
+  .list-head {
+    height: 12px; background: #3d3d3d;
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 4px; color: #000;
+    font-size: 9px;
+  }
+  .list {
+    flex: 1; overflow-y: auto; background: var(--bg);
+    padding: 1px 2px;
+  }
+  .row {
+    display: flex; color: var(--text);
+    padding: 0 2px; height: 13px; line-height: 13px;
+    white-space: nowrap;
+  }
+  .row.selected { background: var(--sel); color: #ffffff; }
+  .row.playing::before { content: "▶ "; color: #ffffff; }
+  .row .idx { width: 22px; color: var(--text-dim); flex-shrink: 0; }
+  .row.selected .idx { color: #c0c0ff; }
+  .row .name { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .row .time { width: 34px; text-align: right; color: var(--text-dim); flex-shrink: 0; }
+  .row.selected .time { color: #c0c0ff; }
+  .foot {
+    height: 13px; background: #3d3d3d;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 6px; color: #000; font-size: 9px;
+  }
+  .foot .btns { display: flex; gap: 3px; }
+  .foot .btn {
+    padding: 0 4px; background: var(--bevel);
+    border: 1px solid #000; cursor: pointer; font-size: 8px;
+  }
+  .foot .btn:hover { background: #ffffff; }
+  ::-webkit-scrollbar { width: 9px; background: #000; }
+  ::-webkit-scrollbar-thumb { background: var(--bevel); border: 1px solid #000; }
+</style>
+</head>
+<body>
+  <div class="title-bar">
+    <div class="sys-btn shade" title="Shade"></div>
+    <div class="sys-btn close" title="Close"></div>
+  </div>
+  <div class="list-head">
+    <span>WINAMP PLAYLIST</span>
+  </div>
+  <div class="list" id="list"></div>
+  <div class="foot">
+    <div class="btns">
+      <div class="btn" id="btn-play">PLAY</div>
+      <div class="btn" id="btn-remove">REM</div>
+      <div class="btn" id="btn-clear">CLR</div>
+    </div>
+    <span id="count">0 items</span>
+  </div>
+  <script src="playlist-window.js"></script>
+</body>
+</html>

@@ -27,6 +27,12 @@
       "preload.js",
       "player.js",
       "player.html",
+      "playlist-window.js",
+      "playlist-window.html",
+      "equalizer-window.js",
+      "equalizer-window.html",
+      "visualizer-window.js",
+      "visualizer-window.html",
       "library.js",
       "library.html",
       "search-tree.js",
@@ -66,5 +72,9 @@
       "artifactName": "Plexamp-Classic-${version}-x86_64.AppImage",
       "maintainer": "imzenreally"
     }
+  },
+  "dependencies": {
+    "butterchurn": "^2.6.7",
+    "butterchurn-presets": "^2.4.7"
   }
 }

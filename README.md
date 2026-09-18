@@ -10,8 +10,8 @@ The library browser is the bridge: search Plex artists, choose an album, and sen
 
 Plexamp Classic packages [Webamp](https://github.com/captbaritone/webamp), a pixel-faithful Winamp 2.9 reimplementation, in an Electron app and connects it to Plex Media Server.
 
-- **Desktop Panels mode** — Winamp panels float independently across the desktop. The transparent surface passes clicks through everywhere else.
-- **Windowed Player mode** — a conventional application window when desktop panels are inconvenient.
+- **Native Panel Windows** — the main player, playlist, equalizer, and visualizer are independent frameless OS windows with no transparent click-eating surface between them.
+- **Windowed Player mode** — a conventional single application window remains available as a fallback.
 - **Plex library browser** — search artists, browse albums, and send a complete album to the Winamp playlist.
 - **Plex account login and federation** — PIN-based login discovers owned and shared servers, then probes LAN, public, and relay connections.
 - **MilkDrop visualization** — Butterchurn's WebGL visualizer and bundled preset collection.
@@ -76,13 +76,13 @@ The AppImage's desktop entry launches with `--no-sandbox` — the standard elect
 ## Architecture
 
 ```text
-main.js                  windows, IPC, app:// and app-stream:// protocols,
-                         Plex stream proxy, menus, player modes
+main.js                  native panel windows, validated IPC, app:// and
+                         app-stream:// protocols, Plex proxy, menus, modes
  auth.js                 Plex PIN login, resource discovery, connection probes,
                          TLS-tolerant request and stream helpers
-preload.js               narrow contextBridge API for both renderers
-player.js / player.html  Webamp and Butterchurn surface, panel interaction,
-                         fractional zoom, media keys
+preload.js               narrow contextBridge API for all renderers
+player.js / player.html  Webamp/audio leader, fractional zoom, media keys
+*-window.js / .html      native playlist, equalizer, and visualizer satellites
 library.js / library.html
                          server picker and artist/album browser
 butterchurn-loader.mjs   Webamp Butterchurn module loader

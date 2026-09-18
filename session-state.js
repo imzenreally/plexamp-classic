@@ -2,8 +2,15 @@ const DEFAULT_LIBRARY_BOUNDS = { width: 1100, height: 720 };
 
 const DEFAULT_SESSION = Object.freeze({
   version: 1,
-  player: { mode: "float", zoomFactor: 1, bounds: null, cluster: null, alwaysOnTop: false },
+  player: { mode: "native", zoomFactor: 1, bounds: null, cluster: null, alwaysOnTop: false },
   panels: { main: true, playlist: false, equalizer: false, milkdrop: false },
+  // Native-mode panel windows: { open, bounds } per real OS window.
+  panelsNative: {
+    main: { open: true },
+    playlist: { open: false },
+    equalizer: { open: false },
+    milkdrop: { open: false },
+  },
   library: { open: false, bounds: null },
 });
 
@@ -51,10 +58,10 @@ function normalizeSession(raw) {
   const state = copyDefault();
   if (!raw || raw.version !== 1) return state;
 
-  if (raw.player?.mode === "desktop" || raw.player?.mode === "windowed" || raw.player?.mode === "float") {
-    // "desktop" was the old name for the floating-panels overlay; it maps to
-    // float at read time so legacy sessions upgrade transparently.
-    state.player.mode = raw.player.mode === "windowed" ? "windowed" : "float";
+  if (raw.player?.mode === "desktop" || raw.player?.mode === "windowed" || raw.player?.mode === "float" || raw.player?.mode === "native") {
+    // "desktop"/"float" were the single-surface floating modes; both map to
+    // native (real panel windows) at read time so legacy sessions upgrade.
+    state.player.mode = raw.player.mode === "windowed" ? "windowed" : "native";
   }
   if (Number.isFinite(raw.player?.zoomFactor) && raw.player.zoomFactor >= 0.75 && raw.player.zoomFactor <= 2) {
     state.player.zoomFactor = raw.player.zoomFactor;
@@ -80,6 +87,24 @@ function normalizeSession(raw) {
   }
   for (const panel of Object.keys(state.panels)) {
     if (typeof raw.panels?.[panel] === "boolean") state.panels[panel] = raw.panels[panel];
+  }
+  // Native panel windows: merge open flags and bounds per panel id.
+  for (const id of Object.keys(state.panelsNative)) {
+    const src = raw.panelsNative?.[id];
+    if (src && typeof src === "object") {
+      if (typeof src.open === "boolean" || typeof src.bounds === "object") {
+        state.panelsNative[id] = {
+          ...state.panelsNative[id],
+          ...(typeof src.open === "boolean" ? { open: src.open } : {}),
+          ...(src.bounds && Number.isFinite(src.bounds.x) && Number.isFinite(src.bounds.y) && Number.isFinite(src.bounds.width) && Number.isFinite(src.bounds.height)
+            ? { bounds: { x: Math.round(src.bounds.x), y: Math.round(src.bounds.y), width: Math.round(src.bounds.width), height: Math.round(src.bounds.height) } }
+            : {}),
+        };
+      }
+    } else if (typeof raw.panels?.[id] === "boolean") {
+      // Upgrade legacy float/windowed visibility into real panel windows.
+      state.panelsNative[id].open = id === "main" ? true : raw.panels[id];
+    }
   }
   if (typeof raw.library?.open === "boolean") state.library.open = raw.library.open;
   if (validBounds(raw.library?.bounds)) {

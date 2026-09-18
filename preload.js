@@ -26,6 +26,19 @@ contextBridge.exposeInMainWorld("plex", {
   enqueueTracks: (tracks) => ipcRenderer.send("library:enqueue", tracks),
   // player -> library toggle (eject button / hotkey)
   toggleLibrary: () => ipcRenderer.invoke("library:toggle"),
+  // native panel windows: state bridge + window ops
+  panelGetState: (slice) => ipcRenderer.invoke("panel:getState", slice),
+  panelAction: (action) => ipcRenderer.send("panel:action", action),
+  panelBroadcast: (state) => ipcRenderer.send("panel:broadcast", state),
+  onPanelState: (cb) => ipcRenderer.on("panel:state", (_e, state) => cb(state)),
+  onPanelQuery: (cb) => ipcRenderer.on("panel:queryState", (_e, q) => cb(q)),
+  onPanelForward: (cb) => ipcRenderer.on("panel:forward", (_e, action) => cb(action)),
+  panelReply: (reply) => ipcRenderer.send("panel:stateReply", reply),
+  panelToggle: (id) => ipcRenderer.send("panel:toggle", id),
+  togglePanelWindow: (id) => ipcRenderer.send("panel:toggle", id),
+  // viz FFT stream: leader -> main -> visualizer window
+  vizData: (data) => ipcRenderer.send("panel:vizData", data),
+  onVizData: (cb) => ipcRenderer.on("panel:vizData", (_e, data) => cb(data)),
   onEnqueue: (cb) => ipcRenderer.on("player:enqueue", (_e, tracks) => cb(tracks)),
   // webamp panel visibility -> menu checkmarks (player -> main)
   sendPanelsChanged: (panels) => ipcRenderer.send("panels:changed", panels),
@@ -47,9 +60,8 @@ contextBridge.exposeInMainWorld("plex", {
   // mode
   getMode: () => ipcRenderer.invoke("player:getMode"),
   setMode: (mode) => ipcRenderer.invoke("player:setMode", mode),
-  // session state (player panel visibility + Electron window state)
+  // read-only session state (main player only; main process authenticates sender)
   getSession: () => ipcRenderer.invoke("session:get"),
-  updateSession: (patch) => ipcRenderer.invoke("session:update", patch),
   // linux tray presence (used by tests)
   hasTray: () => ipcRenderer.invoke("app:hasTray"),
   // env passthrough

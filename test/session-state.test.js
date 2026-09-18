@@ -6,11 +6,17 @@ const {
   repairedBounds,
 } = require("../session-state");
 
-test("first-run session opens only the main player tile", () => {
+test("first-run session opens only the native main player window", () => {
   assert.deepEqual(DEFAULT_SESSION, {
     version: 1,
-    player: { mode: "desktop", zoomFactor: 1, bounds: null, alwaysOnTop: false },
+    player: { mode: "native", zoomFactor: 1, bounds: null, cluster: null, alwaysOnTop: false },
     panels: { main: true, playlist: false, equalizer: false, milkdrop: false },
+    panelsNative: {
+      main: { open: true },
+      playlist: { open: false },
+      equalizer: { open: false },
+      milkdrop: { open: false },
+    },
     library: { open: false, bounds: null },
   });
 });
@@ -25,8 +31,14 @@ test("normalizes malformed saved session state without reopening closed surfaces
 
   assert.deepEqual(state, {
     version: 1,
-    player: { mode: "desktop", zoomFactor: 1, bounds: null, alwaysOnTop: false },
+    player: { mode: "native", zoomFactor: 1, bounds: null, cluster: null, alwaysOnTop: false },
     panels: { main: true, playlist: false, equalizer: false, milkdrop: false },
+    panelsNative: {
+      main: { open: true },
+      playlist: { open: false },
+      equalizer: { open: false },
+      milkdrop: { open: false },
+    },
     library: { open: false, bounds: null },
   });
 });
@@ -45,7 +57,22 @@ test("preserves valid session state and clamps zoom", () => {
   assert.deepEqual(state.player.bounds, { x: 30, y: 40, width: 800, height: 600 });
   assert.equal(state.panels.playlist, true);
   assert.equal(state.panels.milkdrop, true);
+  assert.equal(state.panelsNative.playlist.open, true);
+  assert.equal(state.panelsNative.equalizer.open, false);
+  assert.equal(state.panelsNative.milkdrop.open, true);
   assert.deepEqual(state.library.bounds, { x: 20, y: 30, width: 1100, height: 720 });
+});
+
+test("native bounds without an open flag preserve closed-panel defaults", () => {
+  const state = normalizeSession({
+    version: 1,
+    player: { mode: "native" },
+    panelsNative: {
+      playlist: { bounds: { x: 1, y: 2, width: 275, height: 116 } },
+    },
+  });
+  assert.equal(state.panelsNative.playlist.open, false);
+  assert.deepEqual(state.panelsNative.playlist.bounds, { x: 1, y: 2, width: 275, height: 116 });
 });
 
 test("repairs invalid and off-screen library bounds into the visible work area", () => {
