@@ -12,7 +12,7 @@ let pendingTracks = null;
 let panelStateSyncTimer = null;
 const PANEL_IDS = ["main", "playlist", "equalizer", "milkdrop"];
 const rawMode = new URLSearchParams(location.search).get("mode") || "float";
-const MODE = rawMode === "windowed" ? "windowed" : "float";
+const MODE = rawMode === "windowed" ? "windowed" : rawMode === "native" ? "native" : "float";
 if (MODE === "windowed") document.body.classList.add("windowed");
 
 // ---------- mode: float/windowed click-through + cluster tracking ----------
@@ -379,12 +379,25 @@ async function initWebamp() {
       }));
   }
   webamp = new Ctor(opts);
+  if (MODE === "native") {
+    // Install before React renders so components (including the O-menu)
+    // capture the translated dispatcher, not Webamp's original one.
+    const nativeDispatch = webamp.store.dispatch.bind(webamp.store);
+    webamp.store.dispatch = (action) => {
+      const id = action?.windowId;
+      if (action?.type === "TOGGLE_WINDOW" && ["playlist", "equalizer", "milkdrop"].includes(id)) {
+        window.plex.panelToggle(id);
+        return action;
+      }
+      return nativeDispatch(action);
+    };
+  }
   window.__webamp = webamp;
   await webamp.renderWhenReady(document.getElementById("webamp-slot"));
   const savedSession = await window.plex.getSession();
-  restorePanelState(savedSession.panels);
+  if (MODE !== "native") restorePanelState(savedSession.panels);
   webamp.store.subscribe(() => {
-    schedulePanelStateSave();
+    if (MODE !== "native") schedulePanelStateSave();
     scheduleWindowSync(); // panel toggles change the cluster size
   });
   if (MODE === "windowed") {
@@ -400,6 +413,180 @@ async function initWebamp() {
     await refreshZoom();
     syncWindowSize();
     setTimeout(syncWindowSize, 800);
+  }
+  if (MODE === "native") {
+    // The leader window shows ONLY the main skin panel. Playlist/EQ/viz are
+    // separate OS windows (see main.js PANELS); webamp still OWNS the store
+    // and the audio graph — satellites drive it through the panel: bridge.
+    const style = document.createElement("style");
+    style.textContent = `
+      #webamp .window > div > .draggable,
+      #webamp .window .draggable.title-bar { -webkit-app-region: drag; }
+      #webamp .draggable .handle, #webamp .draggable > * { -webkit-app-region: no-drag; }
+      #webamp .context-menu, #webamp [role="menu"] { -webkit-app-region: no-drag; }
+      /* Hide webamp's internal satellite panels — they are real windows now */
+      #webamp #playlist-window,
+      #webamp #equalizer-window,
+      #webamp #milkdrop-window { display: none !important; }
+      /* Fit the window to the main panel exactly */
+      html, body { width: 275px; height: 116px; overflow: hidden; }
+    `;
+    document.head.appendChild(style);
+    await refreshZoom();
+
+    // Satellite toggle buttons on the main skin (PL / EQ buttons + O menu)
+    // must open REAL windows, not webamp's internal panels. webamp's
+    // click handlers run on their own React events; we intercept the
+    // pointerdown at capture phase and cancel before webamp sees it.
+    document.addEventListener("pointerdown", (e) => {
+      const pl = e.target && e.target.closest ? e.target.closest("#playlist-button, .equalizer-button, #equalizer-button") : null;
+      if (pl) {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = pl.id === "playlist-button" ? "playlist" : "equalizer";
+        window.plex.panelToggle(id);
+        return;
+      }
+      // webamp's O-menu "Playlist Editor"/"Graphical Equalizer" entries also
+      // dispatch TOGGLE_WINDOW — forwarded actions get rewritten in
+      // onPanelForward below, but clicks on the O menu are webamp DOM; the
+      // menu items are handled by store subscription rewrite instead.
+    }, true);
+
+    // Serve state queries from satellites (panel:queryState -> panel:stateReply)
+    window.plex.onPanelQuery(async ({ id, slice }) => {
+      try {
+        const s = webamp.store.getState();
+        let state = null;
+        if (slice === "playlist") {
+          state = {
+            tracks: s.tracks,
+            trackOrder: s.playlist.trackOrder,
+            currentTrack: s.playlist.currentTrack,
+            selectedTracks: s.playlist.selectedTracks,
+            status: s.media.status,
+          };
+        } else if (slice === "equalizer") {
+          state = { ...s.equalizer };
+        } else if (slice === "media") {
+          state = {
+            status: s.media.status,
+            volume: s.media.volume,
+            balance: s.media.balance,
+            shuffle: s.media.shuffle,
+            repeat: s.media.repeat,
+          };
+        } else if (slice === "all") {
+          state = { equalizer: s.equalizer, media: s.media, playlist: s.playlist, tracks: s.tracks, windows: s.windows };
+        }
+        window.plex.panelReply({ id, state });
+      } catch (err) {
+        window.plex.panelReply({ id, state: null });
+      }
+    });
+
+    // Apply forwarded satellite actions to the webamp store. The visualizer
+    // open marker is handled by a callback installed after the analyser tap
+    // is initialized; keeping one listener prevents double-dispatch.
+    let handleVizOpened = () => {};
+    const isValidPanelActionForState = (action) => {
+      if (!action || typeof action.type !== "string") return false;
+      const s = webamp.store.getState();
+      const order = s.playlist?.trackOrder || [];
+      if (["CLICKED_TRACK", "CTRL_CLICKED_TRACK", "SHIFT_CLICKED_TRACK"].includes(action.type)) {
+        return Number.isInteger(action.index) && action.index >= 0 && action.index < order.length;
+      }
+      if (["PLAY_TRACK", "BUFFER_TRACK"].includes(action.type)) return order.includes(action.id);
+      if (action.type === "REMOVE_TRACKS") {
+        return Array.isArray(action.ids) && action.ids.length > 0 && new Set(action.ids).size === action.ids.length && action.ids.every((id) => order.includes(id));
+      }
+      if (action.type === "SET_TRACK_ORDER") {
+        if (!Array.isArray(action.trackOrder) || action.trackOrder.length !== order.length) return false;
+        return new Set(action.trackOrder).size === order.length && action.trackOrder.every((id) => order.includes(id));
+      }
+      return true;
+    };
+    window.plex.onPanelForward((action) => {
+      if (action?.__vizWindowOpened) {
+        handleVizOpened();
+        return;
+      }
+      if (!isValidPanelActionForState(action)) return;
+      try {
+        webamp.store.dispatch(action);
+      } catch (err) {
+        console.error("panel action failed", err);
+      }
+    });
+
+    // Broadcast meaningful state changes to satellites (throttled).
+    let lastBroadcast = 0;
+    webamp.store.subscribe(() => {
+      const now = Date.now();
+      if (now - lastBroadcast < 100) return;
+      lastBroadcast = now;
+      const s = webamp.store.getState();
+      window.plex.panelBroadcast({
+        equalizer: s.equalizer,
+        media: s.media,
+        playlist: { currentTrack: s.playlist.currentTrack, trackOrder: s.playlist.trackOrder, selectedTracks: s.playlist.selectedTracks },
+        tracks: s.tracks,
+      });
+    });
+
+    // Size the leader window to the main panel (zoom-aware, like windowed).
+    const syncNativeSize = () => {
+      const el = document.getElementById("main-window");
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const w = Math.max(200, Math.ceil(r.width * currentZoom));
+      const h = Math.max(80, Math.ceil((r.height + 2) * currentZoom));
+      window.plex.setWindowBounds({ width: w, height: h });
+    };
+    await new Promise((r) => setTimeout(r, 300));
+    syncNativeSize();
+    setTimeout(syncNativeSize, 900);
+    webamp.store.subscribe(() => setTimeout(syncNativeSize, 50));
+    window.addEventListener("resize", () => { refreshZoom().then(syncNativeSize); });
+
+    // Audio tap for the visualizer satellite: stream 1024 waveform bytes
+    // while the viz window is open (30fps, ~30KB/s — trivial over IPC).
+    let vizStreaming = false;
+    const maybeStartViz = () => {
+      if (vizStreaming) return;
+      const session = window.__sessionCache;
+      if (!session?.panelsNative?.milkdrop?.open) return;
+      try {
+        const analyser = webamp.media.getAnalyser();
+        if (!analyser) return;
+        const wave = new Uint8Array(analyser.fftSize);
+        vizStreaming = true;
+        const tick = () => {
+          if (!vizStreaming) return;
+          if (!window.__sessionCache?.panelsNative?.milkdrop?.open) {
+            vizStreaming = false;
+            return;
+          }
+          try {
+            analyser.getByteTimeDomainData(wave);
+            window.plex.vizData({ wave: [...wave.subarray(0, 1024)] });
+          } catch (_) {}
+          setTimeout(tick, 33);
+        };
+        tick();
+      } catch (_) {}
+    };
+    // main tells the leader when the viz window opens (panel:forward with
+    // a marker action); also poll the session occasionally as a fallback.
+    handleVizOpened = maybeStartViz;
+    const refreshVizSession = async () => {
+      const s = await window.plex.getSession();
+      window.__sessionCache = s;
+      maybeStartViz();
+    };
+    refreshVizSession();
+    const sessionPoll = setInterval(refreshVizSession, 1500);
+    window.addEventListener("beforeunload", () => { vizStreaming = false; clearInterval(sessionPoll); });
   }
   if (MODE === "float") {
     await refreshZoom();

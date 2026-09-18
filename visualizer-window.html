@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:;" />
+<title>Winamp Visualizer</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  .title-bar {
+    height: 14px; line-height: 14px;
+    background: linear-gradient(180deg, #efefef 0%, #a0a0a0 50%, #606060 100%);
+    -webkit-app-region: drag;
+    display: flex; align-items: center; justify-content: flex-end;
+    gap: 4px; padding-right: 4px;
+  }
+  .title-bar .sys-btn {
+    width: 9px; height: 9px; -webkit-app-region: no-drag;
+    border: 1px solid #000; background: #efefef; cursor: pointer;
+  }
+  .title-bar .sys-btn.close { background: #b04a3a; }
+  canvas { display: block; width: 100%; height: calc(100% - 14px); background: #000; }
+</style>
+</head>
+<body>
+  <div class="title-bar">
+    <div class="sys-btn close" title="Close"></div>
+  </div>
+  <canvas id="viz"></canvas>
+  <script src="node_modules/butterchurn/lib/butterchurn.min.js"></script>
+  <script src="node_modules/butterchurn-presets/lib/butterchurnPresets.min.js"></script>
+  <script src="visualizer-window.js"></script>
+  </body>
+  </html>

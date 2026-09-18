@@ -60,10 +60,10 @@ function sessionStatePath() {
 function readPlayerMode() {
   try {
     const mode = JSON.parse(fs.readFileSync(playerModePath(), "utf8")).mode;
-    // desktop is the legacy name for the floating overlay; it is float now.
-    return mode === "windowed" ? "windowed" : "float";
+    // desktop/float are legacy names for the panel-windows design; native now.
+    return mode === "windowed" ? "windowed" : "native";
   } catch {
-    return "float";
+    return "native";
   }
 }
 function writePlayerMode(mode) {
@@ -94,8 +94,8 @@ function writeSessionState() {
 function updateSession(patch) {
   const next = JSON.parse(JSON.stringify(readSessionState()));
   if (patch?.player && typeof patch.player === "object") {
-    if (patch.player.mode === "desktop" || patch.player.mode === "float") {
-      next.player.mode = "float";
+    if (patch.player.mode === "desktop" || patch.player.mode === "float" || patch.player.mode === "native") {
+      next.player.mode = "native";
     } else if (patch.player.mode === "windowed") {
       next.player.mode = "windowed";
     }
@@ -106,6 +106,19 @@ function updateSession(patch) {
   if (patch?.panels && typeof patch.panels === "object") {
     for (const key of Object.keys(next.panels)) {
       if (typeof patch.panels[key] === "boolean") next.panels[key] = patch.panels[key];
+    }
+  }
+  if (patch?.panelsNative && typeof patch.panelsNative === "object") {
+    for (const id of Object.keys(next.panelsNative)) {
+      const src = patch.panelsNative[id];
+      if (src && typeof src === "object") {
+        if (typeof src.open === "boolean") {
+          next.panelsNative[id] = { ...next.panelsNative[id], open: src.open };
+        }
+        if (src.bounds && typeof src.bounds === "object") {
+          next.panelsNative[id] = { ...next.panelsNative[id], bounds: src.bounds };
+        }
+      }
     }
   }
   if (patch?.library && typeof patch.library === "object") {
@@ -129,74 +142,321 @@ function attachBoundsTracking(win, key) {
 // ---------- windows ----------
 function createPlayerWindow() {
   const saved = readSessionState();
-  // Float mode: one small transparent window hugging the panel cluster.
-  // Unlike the old desktop mode (a transparent FULL-screen overlay, which
-  // Wayland compositors kept handing keyboard focus, hijacking keystrokes),
-  // the float window only covers the panels themselves. Gaps inside the
-  // window are click-through; the rest of the desktop is simply not part of
-  // the window, so nothing can steal focus. Works on macOS AND Linux.
-  // "desktop" is retained as a legacy alias for float.
-  const mode = saved.player.mode === "windowed" ? "windowed" : "float";
-  if (mode === "float") {
-    const wa = screen.getPrimaryDisplay().workArea;
-    // Restore the saved cluster origin; fall back to top-left of work area.
-    const clusterBounds = saved.player.cluster || null;
-    const x = clusterBounds ? clusterBounds.x : wa.x + 24;
-    const y = clusterBounds ? clusterBounds.y : wa.y + 24;
-    playerWindow = new BrowserWindow({
-      x,
-      y,
-      width: clusterBounds?.width || 400,
-      height: clusterBounds?.height || 480,
-      frame: false,
-      transparent: true,
-      hasShadow: false,
-      resizable: false,
-      movable: true, // macOS: movable:false also blocks programmatic position
-      // changes; float mode relies on the renderer (no app-region: drag
-      // styles are injected in float mode), so OS-initiated drags can't
-      // happen anyway.
-      backgroundColor: "#00000000",
-      alwaysOnTop: saved.player.alwaysOnTop,
-      skipTaskbar: true,
-      title: "Winamp Classic",
-      webPreferences: {
-        preload: path.join(__dirname, "preload.js"),
-        contextIsolation: true,
-        nodeIntegration: false,
-      },
-    });
-    playerWindow.setIgnoreMouseEvents(true, { forward: true });
-    playerWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: false });
-    attachLibraryHotkey(playerWindow);
-    playerWindow.loadURL("app://winamp/player.html?mode=float");
-  } else {
-    const workArea = screen.getPrimaryDisplay().workArea;
-    const restored = saved.player.bounds ? repairedBounds(saved.player.bounds, workArea) : null;
-    playerWindow = new BrowserWindow({
-      ...(restored || { width: 740, height: 480 }),
-      frame: false,
-      hasShadow: true,
-      resizable: true,
-      movable: true,
-      backgroundColor: "#1e1e24",
-      alwaysOnTop: saved.player.alwaysOnTop,
-      title: "Winamp Classic",
-      webPreferences: {
-        preload: path.join(__dirname, "preload.js"),
-        contextIsolation: true,
-        nodeIntegration: false,
-      },
-    });
-    attachBoundsTracking(playerWindow, "player");
-    attachLibraryHotkey(playerWindow);
-    playerWindow.loadURL("app://winamp/player.html?mode=windowed");
+  // Native mode: every panel (main/playlist/equalizer/milkdrop) is its own
+  // REAL OS window. No transparent cluster surface exists, so there is
+  // nothing invisible to eat clicks (the Wayland/KDE killer), no cluster
+  // bounds math, and the compositor handles dragging/snapping/multi-monitor.
+  // "desktop"/"float" are legacy names that map to native at read time.
+  const mode = saved.player.mode === "windowed" ? "windowed" : "native";
+  if (mode === "native") {
+    createNativeWindows(saved);
+    return;
   }
+  const workArea = screen.getPrimaryDisplay().workArea;
+  const restored = saved.player.bounds ? repairedBounds(saved.player.bounds, workArea) : null;
+  playerWindow = new BrowserWindow({
+    ...(restored || { width: 740, height: 480 }),
+    frame: false,
+    hasShadow: true,
+    resizable: true,
+    movable: true,
+    backgroundColor: "#1e1e24",
+    alwaysOnTop: saved.player.alwaysOnTop,
+    title: "Winamp Classic",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  attachBoundsTracking(playerWindow, "player");
+  attachLibraryHotkey(playerWindow);
+  playerWindow.loadURL("app://winamp/player.html?mode=windowed");
   playerWindow.webContents.once("did-finish-load", () => {
     const zoom = readSessionState().player.zoomFactor;
     if (zoom !== 1) playerWindow?.webContents.setZoomFactor(zoom);
   });
 }
+
+// ---------- native panel windows ----------
+// The leader (main) window hosts webamp itself; playlist/equalizer/milkdrop
+// are custom-styled satellite windows that read/write the SAME webamp store
+// through the panel: IPC bridge below. Each window's bounds live in the
+// session under panelsNative.<id>.bounds.
+const PANELS = {
+  main: { title: "Winamp Classic", w: 275, h: 116, page: "player.html?mode=native&panel=main" },
+  playlist: { title: "Winamp Playlist", w: 275, h: 116, page: "playlist-window.html" },
+  equalizer: { title: "Winamp Equalizer", w: 275, h: 116, page: "equalizer-window.html" },
+  milkdrop: { title: "Winamp Visualizer", w: 275, h: 116, page: "visualizer-window.html" },
+};
+const nativeWindows = new Map(); // id -> BrowserWindow
+
+function panelBounds(saved, id, fallbackX, fallbackY) {
+  const b = saved.panelsNative?.[id]?.bounds;
+  if (b) {
+    const wa = screen.getDisplayMatching(b).workArea;
+    const width = Math.max(180, Math.min(b.width, wa.width));
+    const height = Math.max(80, Math.min(b.height, wa.height));
+    return {
+      x: Math.round(Math.min(Math.max(b.x, wa.x), wa.x + wa.width - width)),
+      y: Math.round(Math.min(Math.max(b.y, wa.y), wa.y + wa.height - height)),
+      width: Math.round(width),
+      height: Math.round(height),
+    };
+  }
+  const wa = screen.getPrimaryDisplay().workArea;
+  const zoom = saved.player?.zoomFactor || 1;
+  return {
+    x: wa.x + fallbackX,
+    y: wa.y + fallbackY,
+    width: Math.round(PANELS[id].w * zoom),
+    height: Math.round(PANELS[id].h * zoom),
+  };
+}
+
+function createNativeWindows(saved) {
+  const layout = saved.panelsNative || {};
+  for (const id of Object.keys(PANELS)) {
+    if (id !== "main" && layout[id]?.open === false) continue; // user-closed satellites
+    createPanelWindow(id, saved);
+  }
+}
+
+function createPanelWindow(id, saved) {
+  const spec = PANELS[id];
+  const fallbacks = { main: [24, 24], playlist: [24, 156], equalizer: [319, 24], milkdrop: [319, 156] };
+  const [fx, fy] = fallbacks[id] || [24, 24];
+  const bounds = panelBounds(saved || readSessionState(), id, fx, fy);
+  const win = new BrowserWindow({
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    frame: false,
+    hasShadow: true,
+    resizable: true,
+    movable: true,
+    backgroundColor: "#000000",
+    alwaysOnTop: (saved || readSessionState()).player.alwaysOnTop,
+    skipTaskbar: false,
+    title: spec.title,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  });
+  nativeWindows.set(id, win);
+  if (id === "main") {
+    playerWindow = win;
+    attachLibraryHotkey(win);
+  }
+  win.on("closed", () => {
+    if (nativeWindows.get(id) === win) nativeWindows.delete(id);
+    if (id === "main") {
+      if (playerWindow === win) playerWindow = null;
+      if (!isQuitting && !isRestartingPlayer) {
+        isQuitting = true;
+        app.quit();
+      }
+    }
+    if (!isQuitting && !isRestartingPlayer && id !== "main") {
+      updateSession({ panelsNative: { [id]: { open: false } } });
+      rebuildMenu();
+    }
+  });
+  win.on("moved", () => {
+    if (win.isDestroyed()) return;
+    const b = win.getBounds();
+    debouncePanelBounds(id, b);
+  });
+  win.on("resized", () => {
+    if (win.isDestroyed()) return;
+    debouncePanelBounds(id, win.getBounds());
+  });
+  win.loadURL(`app://winamp/${spec.page}`);
+  win.webContents.once("did-finish-load", () => {
+    const zoom = readSessionState().player.zoomFactor;
+    if (zoom !== 1) win.webContents.setZoomFactor(zoom);
+  });
+}
+
+const panelBoundsTimers = new Map();
+function debouncePanelBounds(id, b) {
+  clearTimeout(panelBoundsTimers.get(id));
+  panelBoundsTimers.set(id, setTimeout(() => {
+    updateSession({ panelsNative: { [id]: { bounds: { x: b.x, y: b.y, width: b.width, height: b.height } } } });
+  }, 400));
+}
+
+function togglePanelWindow(id) {
+  const existing = nativeWindows.get(id);
+  if (existing && !existing.isDestroyed()) {
+    existing.close();
+    updateSession({ panelsNative: { [id]: { open: false } } });
+  } else {
+    createPanelWindow(id);
+    updateSession({ panelsNative: { [id]: { open: true } } });
+    // wake the leader's FFT tap when the visualizer opens
+    if (id === "milkdrop") {
+      const leader = nativeWindows.get("main");
+      if (leader && !leader.isDestroyed()) leader.webContents.send("panel:forward", { __vizWindowOpened: true });
+    }
+  }
+  rebuildMenu();
+}
+
+// ---------- panel state bridge (leader <-> satellites) ----------
+// Satellites get/put webamp store state through the main process, which
+// forwards to the leader window (the only one with a webamp instance).
+function forwardToLeader(action) {
+  const leader = nativeWindows.get("main");
+  if (leader && !leader.isDestroyed()) {
+    leader.webContents.send("panel:forward", action);
+  }
+}
+
+// Panel toggle that routes correctly per mode: native windows toggle real
+// windows; windowed/legacy modes dispatch webamp TOGGLE_WINDOW in the player.
+function sendToPlayerOrToggle(id) {
+  if (readSessionState().player.mode === "native" && id !== "main") {
+    togglePanelWindow(id);
+    return;
+  }
+  sendToPlayer("panel:toggle", id);
+}
+
+function panelIsOpen(saved, id) {
+  const win = nativeWindows.get(id);
+  return saved.player.mode === "native"
+    ? Boolean(win && !win.isDestroyed())
+    : Boolean(saved.panels[id]);
+}
+
+function setPanelsAlwaysOnTop(alwaysOnTop) {
+  if (readSessionState().player.mode === "native") {
+    for (const win of nativeWindows.values()) {
+      if (!win.isDestroyed()) win.setAlwaysOnTop(alwaysOnTop);
+    }
+  } else if (playerWindow && !playerWindow.isDestroyed()) {
+    playerWindow.setAlwaysOnTop(alwaysOnTop);
+  }
+  updateSession({ player: { alwaysOnTop } });
+}
+
+function setPanelsZoom(factor) {
+  const saved = readSessionState();
+  const oldFactor = saved.player.zoomFactor || 1;
+  const ratio = factor / oldFactor;
+  if (saved.player.mode === "native") {
+    for (const id of Object.keys(PANELS)) {
+      const win = nativeWindows.get(id);
+      if (win && !win.isDestroyed()) {
+        const b = win.getBounds();
+        const bounds = { ...b, width: Math.round(b.width * ratio), height: Math.round(b.height * ratio) };
+        win.setBounds(bounds);
+        win.webContents.setZoomFactor(factor);
+        updateSession({ panelsNative: { [id]: { bounds } } });
+      } else if (saved.panelsNative?.[id]?.bounds) {
+        const b = saved.panelsNative[id].bounds;
+        updateSession({ panelsNative: { [id]: { bounds: { ...b, width: Math.round(b.width * ratio), height: Math.round(b.height * ratio) } } } });
+      }
+    }
+  } else if (playerWindow && !playerWindow.isDestroyed()) {
+    playerWindow.webContents.setZoomFactor(factor);
+  }
+  updateSession({ player: { zoomFactor: factor } });
+}
+
+const panelStateWaiters = new Map(); // key -> resolve
+const PANEL_ACTIONS = {
+  playlist: new Set(["CLICKED_TRACK", "CTRL_CLICKED_TRACK", "SHIFT_CLICKED_TRACK", "PLAY_TRACK", "BUFFER_TRACK", "REMOVE_TRACKS", "STOP", "REMOVE_ALL_TRACKS", "SET_TRACK_ORDER"]),
+  equalizer: new Set(["SET_BAND_VALUE", "SET_EQ_ON", "SET_EQ_OFF", "SET_EQ_AUTO"]),
+};
+function panelIdForSender(sender) {
+  for (const [id, win] of nativeWindows) {
+    if (!win.isDestroyed() && win.webContents === sender) return id;
+  }
+  return null;
+}
+
+function validatedPanelAction(senderPanel, action) {
+  if (!action || typeof action.type !== "string" || !PANEL_ACTIONS[senderPanel]?.has(action.type)) return null;
+  const type = action.type;
+  if (["CLICKED_TRACK", "CTRL_CLICKED_TRACK", "SHIFT_CLICKED_TRACK"].includes(type)) {
+    return Number.isInteger(action.index) && action.index >= 0 && action.index < 100000 ? { type, index: action.index } : null;
+  }
+  if (["PLAY_TRACK", "BUFFER_TRACK"].includes(type)) {
+    return Number.isInteger(action.id) && action.id >= 0 ? { type, id: action.id } : null;
+  }
+  if (["REMOVE_TRACKS", "SET_TRACK_ORDER"].includes(type)) {
+    const key = type === "REMOVE_TRACKS" ? "ids" : "trackOrder";
+    const value = action[key];
+    if (!Array.isArray(value) || value.length > 10000 || new Set(value).size !== value.length || !value.every((id) => Number.isInteger(id) && id >= 0)) return null;
+    return { type, [key]: [...value] };
+  }
+  if (type === "SET_BAND_VALUE") {
+    const bands = new Set(["preamp", "60", "170", "310", "600", "1000", "3000", "6000", "12000", "14000", "16000"]);
+    return bands.has(String(action.band)) && Number.isFinite(action.value) && action.value >= 0 && action.value <= 100
+      ? { type, band: String(action.band), value: action.value }
+      : null;
+  }
+  if (type === "SET_EQ_AUTO") return action.value === false ? { type, value: false } : null;
+  return { type };
+}
+
+ipcMain.on("panel:stateReply", (e, { id, state } = {}) => {
+  const leader = nativeWindows.get("main");
+  if (!leader || leader.isDestroyed() || e.sender !== leader.webContents || typeof id !== "string") return;
+  const resolve = panelStateWaiters.get(id);
+  if (resolve) {
+    panelStateWaiters.delete(id);
+    resolve(state);
+  }
+});
+
+ipcMain.handle("panel:getState", (e, slice) => {
+  return new Promise((resolve) => {
+    const senderPanel = panelIdForSender(e.sender);
+    if (!senderPanel || senderPanel === "main" || !new Set(["playlist", "equalizer", "media", "all"]).has(slice)) return resolve(null);
+    const leader = nativeWindows.get("main");
+    if (!leader || leader.isDestroyed()) return resolve(null);
+    const key = `panelstate:${Date.now()}:${Math.random()}`;
+    panelStateWaiters.set(key, resolve);
+    leader.webContents.send("panel:queryState", { id: key, slice });
+    setTimeout(() => {
+      if (panelStateWaiters.has(key)) {
+        panelStateWaiters.delete(key);
+        resolve(null);
+      }
+    }, 2000);
+  });
+});
+
+ipcMain.on("panel:action", (e, action) => {
+  const senderPanel = panelIdForSender(e.sender);
+  const validated = validatedPanelAction(senderPanel, action);
+  if (validated) forwardToLeader(validated);
+});
+
+// broadcast: leader pushes state deltas to every satellite
+ipcMain.on("panel:broadcast", (e, state) => {
+  const leader = nativeWindows.get("main");
+  if (!leader || leader.isDestroyed() || e.sender !== leader.webContents) return;
+  for (const [id, win] of nativeWindows) {
+    if (id === "main") continue;
+    if (!win.isDestroyed()) win.webContents.send("panel:state", state);
+  }
+});
+
+// viz FFT relay: leader -> visualizer window only (30fps byte arrays)
+ipcMain.on("panel:vizData", (e, data) => {
+  const leader = nativeWindows.get("main");
+  if (!leader || leader.isDestroyed() || e.sender !== leader.webContents || !Array.isArray(data?.wave) || data.wave.length > 2048) return;
+  const viz = nativeWindows.get("milkdrop");
+  if (viz && !viz.isDestroyed()) viz.webContents.send("panel:vizData", data);
+});
 
 function createLibraryWindow() {
   if (libraryWindow && !libraryWindow.isDestroyed()) {
@@ -281,10 +541,17 @@ function setPlayerModeAndRestart(mode) {
   updateSession({ player: { mode } });
   writePlayerMode(mode); // retain compatibility with existing installations.
   const oldPlayer = playerWindow;
+  const oldNativeWindows = [...nativeWindows.values()];
   isRestartingPlayer = true;
   try {
     createPlayerWindow();
-    if (oldPlayer && !oldPlayer.isDestroyed()) oldPlayer.destroy();
+    if (oldNativeWindows.length) {
+      for (const win of oldNativeWindows) {
+        if (!win.isDestroyed()) win.destroy();
+      }
+    } else if (oldPlayer && !oldPlayer.isDestroyed()) {
+      oldPlayer.destroy();
+    }
   } finally {
     isRestartingPlayer = false;
   }
@@ -507,7 +774,8 @@ ipcMain.handle("plex:track", async (_e, server, ratingKey) => {
 });
 
 // ---------- media keys ----------
-ipcMain.on("media:register", () => {
+ipcMain.on("media:register", (event) => {
+  if (!isPlayerSender(event)) return;
   globalShortcut.register("MediaPlayPause", () =>
     playerWindow?.webContents.send("media", "toggle")
   );
@@ -518,21 +786,26 @@ ipcMain.on("media:register", () => {
     playerWindow?.webContents.send("media", "prev")
   );
 });
-ipcMain.on("media:unregister", () => globalShortcut.unregisterAll());
+ipcMain.on("media:unregister", (event) => {
+  if (isPlayerSender(event)) globalShortcut.unregisterAll();
+});
 
 // ---------- library -> player relay ----------
-ipcMain.on("library:enqueue", (_e, tracks) => {
+ipcMain.on("library:enqueue", (event, tracks) => {
+  if (!isLibrarySender(event) || !Array.isArray(tracks) || tracks.length > 10000) return;
   if (playerWindow && !playerWindow.isDestroyed()) {
     playerWindow.webContents.send("player:enqueue", tracks);
   }
 });
 
 // ---------- player window: size to winamp cluster (windowed mode) ----------
-ipcMain.on("player:setBounds", (_e, { width, height }) => {
+ipcMain.on("player:setBounds", (e, { width, height } = {}) => {
   if (!playerWindow || playerWindow.isDestroyed()) return;
+  if (e.sender !== playerWindow.webContents || !Number.isFinite(width) || !Number.isFinite(height)) return;
   const cur = playerWindow.getBounds();
-  const w = Math.min(Math.round(width) + 16, 1400);
-  const h = Math.min(Math.round(height) + 16, 1200);
+  const padding = readSessionState().player.mode === "windowed" ? 16 : 0;
+  const w = Math.min(Math.max(180, Math.round(width) + padding), 1400);
+  const h = Math.min(Math.max(80, Math.round(height) + padding), 1200);
   if (Math.abs(cur.width - w) > 2 || Math.abs(cur.height - h) > 2) {
     playerWindow.setSize(w, h);
   }
@@ -543,8 +816,9 @@ ipcMain.on("player:setBounds", (_e, { width, height }) => {
 // panels (zoom-adjusted). The main process keeps the transparent float
 // window exactly wrapped around that cluster and persists its origin so
 // panel layout survives restarts.
-ipcMain.on("player:setCluster", (_e, { x, y, width, height } = {}) => {
+ipcMain.on("player:setCluster", (event, { x, y, width, height } = {}) => {
   if (!playerWindow || playerWindow.isDestroyed()) return;
+  if (!isPlayerSender(event) || ![x, y, width, height].every(Number.isFinite)) return;
   // Size is capped to the UNION of all displays' work areas. The float
   // window legitimately spans displays while panels are dragged between
   // them — capping to the single nearest display (the old behavior)
@@ -571,12 +845,12 @@ ipcMain.on("player:setCluster", (_e, { x, y, width, height } = {}) => {
   clusterSyncDebounced();
 });
 
-ipcMain.handle("player:getDisplays", () =>
-  screen.getAllDisplays().map((d) => ({ workArea: d.workArea }))
-);
+ipcMain.handle("player:getDisplays", (event) => isPlayerSender(event)
+  ? screen.getAllDisplays().map((d) => ({ workArea: d.workArea }))
+  : []);
 
 // Eject-button / hotkey library toggle (same semantics as the menu item).
-ipcMain.handle("library:toggle", () => toggleLibrary());
+ipcMain.handle("library:toggle", (event) => isPlayerSender(event) ? toggleLibrary() : false);
 
 // Debounced persistence of the cluster origin (not the full geometry —
 // webamp owns panel-relative layout; we store only where the cluster
@@ -592,45 +866,64 @@ function clusterSyncDebounced() {
 }
 
 // ---------- click-through control (desktop mode) ----------
-ipcMain.on("player:setIgnore", (_e, ignore) => {
-  if (playerWindow && !playerWindow.isDestroyed()) {
+ipcMain.on("player:setIgnore", (event, ignore) => {
+  if (isPlayerSender(event) && typeof ignore === "boolean") {
     playerWindow.setIgnoreMouseEvents(ignore, { forward: true });
   }
 });
 
+function isPlayerSender(event) {
+  return Boolean(playerWindow && !playerWindow.isDestroyed() && event.sender === playerWindow.webContents);
+}
+
+function isLibrarySender(event) {
+  return Boolean(libraryWindow && !libraryWindow.isDestroyed() && event.sender === libraryWindow.webContents);
+}
+
 // ---------- session bridge ----------
-ipcMain.handle("session:get", () => readSessionState());
-ipcMain.handle("session:update", (_e, patch) => updateSession(patch));
+ipcMain.handle("session:get", (event) => isPlayerSender(event) ? readSessionState() : null);
 
 // ---------- webamp panel visibility <-> View menu ----------
-ipcMain.on("panels:changed", (_e, panels) => {
+ipcMain.on("panels:changed", (event, panels) => {
+  if (!isPlayerSender(event)) return;
   if (panels && typeof panels === "object") {
     updateSession({ panels });
   }
   rebuildMenu();
 });
-ipcMain.on("panel:toggle", (_e, id) => {
+ipcMain.on("panel:toggle", (e, id) => {
+  if (!["playlist", "equalizer", "milkdrop"].includes(id)) return;
+  const senderPanel = panelIdForSender(e.sender);
+  // Native mode: panels are real windows — toggle the window itself.
+  if (readSessionState().player.mode === "native") {
+    if (!senderPanel || (senderPanel !== "main" && senderPanel !== id)) return;
+    togglePanelWindow(id);
+    return;
+  }
+  if (!playerWindow || playerWindow.isDestroyed() || e.sender !== playerWindow.webContents) return;
   sendToPlayer("panel:toggle", id);
 });
 
 // ---------- player mode toggle ----------
-ipcMain.handle("player:getMode", () => readSessionState().player.mode);
-ipcMain.handle("player:setMode", (_e, mode) => {
-  const normalized = mode === "windowed" ? "windowed" : mode === "float" || mode === "desktop" ? "float" : null;
+ipcMain.handle("player:getMode", (event) => isPlayerSender(event) ? readSessionState().player.mode : null);
+ipcMain.handle("player:setMode", (event, mode) => {
+  if (!isPlayerSender(event)) return readSessionState().player.mode;
+  const normalized = mode === "windowed" ? "windowed" : mode === "float" || mode === "desktop" || mode === "native" ? "native" : null;
   if (!normalized) return readSessionState().player.mode;
   setPlayerModeAndRestart(normalized);
   return normalized;
 });
 
 // ---------- fractional scaling (zoom) ----------
-ipcMain.handle("player:getZoom", () => {
+ipcMain.handle("player:getZoom", (event) => {
+  if (!isPlayerSender(event)) return null;
   if (playerWindow && !playerWindow.isDestroyed()) return playerWindow.webContents.getZoomFactor();
   return readSessionState().player.zoomFactor;
 });
-ipcMain.handle("player:setZoom", (_e, factor) => {
+ipcMain.handle("player:setZoom", (event, factor) => {
+  if (!isPlayerSender(event)) return readSessionState().player.zoomFactor;
   if (!Number.isFinite(factor) || factor < 0.75 || factor > 2) return readSessionState().player.zoomFactor;
-  updateSession({ player: { zoomFactor: factor } });
-  if (playerWindow && !playerWindow.isDestroyed()) playerWindow.webContents.setZoomFactor(factor);
+  setPanelsZoom(factor);
   return factor;
 });
 
@@ -639,22 +932,21 @@ ipcMain.handle("app:hasTray", () => Boolean(tray));
 // ---------- Winamp-style context menu (right-click on the skin) ----------
 // Same structure on every platform; pops up at the pointer. The renderer
 // listens for contextmenu events over the webamp panels and asks for this.
-ipcMain.handle("player:contextMenu", (_e, { x, y } = {}) => {
-  if (!playerWindow || playerWindow.isDestroyed()) return;
+ipcMain.handle("player:contextMenu", (event, { x, y } = {}) => {
+  if (!isPlayerSender(event) || !Number.isFinite(x) || !Number.isFinite(y)) return;
   const saved = readSessionState();
   const item = (label, checked, click, extra = {}) =>
     ({ label, type: "checkbox", checked, click, ...extra });
   const sep = { type: "separator" };
   const context = Menu.buildFromTemplate([
-    item("Playlist", Boolean(saved.panels.playlist), () => sendToPlayer("panel:toggle", "playlist")),
-    item("Equalizer", Boolean(saved.panels.equalizer), () => sendToPlayer("panel:toggle", "equalizer")),
-    item("Visualizer (MilkDrop)", Boolean(saved.panels.milkdrop), () => sendToPlayer("panel:toggle", "milkdrop")),
+    item("Playlist", panelIsOpen(saved, "playlist"), () => sendToPlayerOrToggle("playlist")),
+    item("Equalizer", panelIsOpen(saved, "equalizer"), () => sendToPlayerOrToggle("equalizer")),
+    item("Visualizer (MilkDrop)", panelIsOpen(saved, "milkdrop"), () => sendToPlayerOrToggle("milkdrop")),
     sep,
     item("Media Library", Boolean(saved.library.open), () => toggleLibrary()),
     item("Always on Top", Boolean(saved.player.alwaysOnTop), () => {
       const alwaysOnTop = Boolean(playerWindow && !playerWindow.isDestroyed() && !playerWindow.isAlwaysOnTop());
-      playerWindow?.setAlwaysOnTop(alwaysOnTop);
-      updateSession({ player: { alwaysOnTop } });
+      setPanelsAlwaysOnTop(alwaysOnTop);
       rebuildMenu();
       rebuildTray();
     }),
@@ -666,8 +958,7 @@ ipcMain.handle("player:contextMenu", (_e, { x, y } = {}) => {
         type: "checkbox",
         checked: Math.abs(saved.player.zoomFactor - f) < 0.01,
         click: () => {
-          updateSession({ player: { zoomFactor: f } });
-          playerWindow?.webContents.setZoomFactor(f);
+          setPanelsZoom(f);
           rebuildMenu();
           rebuildTray();
         },
@@ -676,7 +967,7 @@ ipcMain.handle("player:contextMenu", (_e, { x, y } = {}) => {
     {
       label: "Player Mode",
       submenu: [
-        item("Floating Panels", saved.player.mode !== "windowed", () => setPlayerModeAndRestart("float")),
+        item("Native Panel Windows", saved.player.mode !== "windowed", () => setPlayerModeAndRestart("native")),
         item("Windowed Player", saved.player.mode === "windowed", () => setPlayerModeAndRestart("windowed")),
       ],
     },
@@ -689,7 +980,6 @@ ipcMain.handle("player:contextMenu", (_e, { x, y } = {}) => {
       },
     },
   ]);
-  console.log(`[float] contextMenu popup at ${JSON.stringify({ x, y })}`);
   context.popup({ window: playerWindow, x, y });
 });
 
@@ -720,15 +1010,14 @@ function rebuildTray() {
   const item = (label, checked, click, extra = {}) => ({ label, type: "checkbox", checked, click, ...extra });
   const sep = { type: "separator" };
   const context = Menu.buildFromTemplate([
-    item("Playlist", Boolean(saved.panels.playlist), () => sendToPlayer("panel:toggle", "playlist")),
-    item("Equalizer", Boolean(saved.panels.equalizer), () => sendToPlayer("panel:toggle", "equalizer")),
-    item("Visualizer (MilkDrop)", Boolean(saved.panels.milkdrop), () => sendToPlayer("panel:toggle", "milkdrop")),
+    item("Playlist", panelIsOpen(saved, "playlist"), () => sendToPlayerOrToggle("playlist")),
+    item("Equalizer", panelIsOpen(saved, "equalizer"), () => sendToPlayerOrToggle("equalizer")),
+    item("Visualizer (MilkDrop)", panelIsOpen(saved, "milkdrop"), () => sendToPlayerOrToggle("milkdrop")),
     sep,
     item("Media Library", Boolean(saved.library.open), () => toggleLibrary()),
     item("Always on Top", Boolean(saved.player.alwaysOnTop), () => {
       const alwaysOnTop = Boolean(playerWindow && !playerWindow.isDestroyed() && !playerWindow.isAlwaysOnTop());
-      playerWindow?.setAlwaysOnTop(alwaysOnTop);
-      updateSession({ player: { alwaysOnTop } });
+      setPanelsAlwaysOnTop(alwaysOnTop);
       rebuildMenu();
       rebuildTray();
     }),
@@ -740,8 +1029,7 @@ function rebuildTray() {
         type: "checkbox",
         checked: Math.abs(saved.player.zoomFactor - f) < 0.01,
         click: () => {
-          updateSession({ player: { zoomFactor: f } });
-          playerWindow?.webContents.setZoomFactor(f);
+          setPanelsZoom(f);
           rebuildMenu();
           rebuildTray();
         },
@@ -750,7 +1038,7 @@ function rebuildTray() {
     {
       label: "Player Mode",
       submenu: [
-        item("Floating Panels", saved.player.mode === "float", () => setPlayerModeAndRestart("float")),
+        item("Native Panel Windows", saved.player.mode === "native", () => setPlayerModeAndRestart("native")),
         item("Windowed Player", saved.player.mode === "windowed", () => setPlayerModeAndRestart("windowed")),
       ],
     },
@@ -802,20 +1090,20 @@ function rebuildMenu() {
         {
           label: "Playlist",
           type: "checkbox",
-          checked: Boolean(saved.panels.playlist),
-          click: () => sendToPlayer("panel:toggle", "playlist"),
+          checked: panelIsOpen(saved, "playlist"),
+          click: () => sendToPlayerOrToggle("playlist"),
         },
         {
           label: "Equalizer",
           type: "checkbox",
-          checked: Boolean(saved.panels.equalizer),
-          click: () => sendToPlayer("panel:toggle", "equalizer"),
+          checked: panelIsOpen(saved, "equalizer"),
+          click: () => sendToPlayerOrToggle("equalizer"),
         },
         {
           label: "Visualizer (MilkDrop)",
           type: "checkbox",
-          checked: Boolean(saved.panels.milkdrop),
-          click: () => sendToPlayer("panel:toggle", "milkdrop"),
+          checked: panelIsOpen(saved, "milkdrop"),
+          click: () => sendToPlayerOrToggle("milkdrop"),
         },
         { type: "separator" },
         {
@@ -833,19 +1121,18 @@ function rebuildMenu() {
             type: "checkbox",
             checked: Math.abs(saved.player.zoomFactor - f) < 0.01,
             click: () => {
-              updateSession({ player: { zoomFactor: f } });
-              playerWindow?.webContents.setZoomFactor(f);
+              setPanelsZoom(f);
               rebuildMenu();
             },
           })),
         },
         { type: "separator" },
         {
-          label: "Floating Panels",
+          label: "Native Panel Windows",
           type: "checkbox",
           checked: saved.player.mode !== "windowed",
           accelerator: "CmdOrCtrl+P",
-          click: () => setPlayerModeAndRestart("float"),
+          click: () => setPlayerModeAndRestart("native"),
         },
         {
           label: "Windowed Player",
@@ -862,8 +1149,7 @@ function rebuildMenu() {
           accelerator: "CmdOrCtrl+T",
           click: () => {
             const alwaysOnTop = Boolean(playerWindow && !playerWindow.isDestroyed() && !playerWindow.isAlwaysOnTop());
-            playerWindow?.setAlwaysOnTop(alwaysOnTop);
-            updateSession({ player: { alwaysOnTop } });
+            setPanelsAlwaysOnTop(alwaysOnTop);
             rebuildMenu();
           },
         },
@@ -875,12 +1161,38 @@ function rebuildMenu() {
   rebuildTray();
 }
 
+const APP_PUBLIC_FILES = new Set([
+  "player.html", "player.js", "library.html", "library.js", "search-tree.js",
+  "butterchurn-loader.mjs", "playlist-window.html", "playlist-window.js",
+  "equalizer-window.html", "equalizer-window.js", "visualizer-window.html",
+  "visualizer-window.js", "vendor/webamp.bundle.min.js",
+  "vendor/webamp.butterchurn-bundle.min.mjs", "vendor/presets-og-pack.mjs",
+  "node_modules/butterchurn/lib/butterchurn.min.js",
+  "node_modules/butterchurn-presets/lib/butterchurnPresets.min.js",
+]);
+
 app.whenReady().then(() => {
   protocol.handle("app", (request) => {
     const u = new URL(request.url);
-    let rel = decodeURIComponent(u.pathname);
+    let rel;
+    try {
+      rel = decodeURIComponent(u.pathname);
+    } catch {
+      return new Response("invalid path", { status: 400 });
+    }
     if (rel === "/") rel = "/player.html";
-    const filePath = path.join(__dirname, rel);
+    // Resolve under the application root and reject traversal (including
+    // encoded separators such as ..%2f). app:// serves code and must never
+    // expose .env, auth state, or arbitrary local files.
+    const root = path.resolve(__dirname);
+    const appPath = rel.replace(/^\/+/, "");
+    const filePath = path.resolve(root, appPath);
+    if (filePath !== root && !filePath.startsWith(`${root}${path.sep}`)) {
+      return new Response("forbidden", { status: 403 });
+    }
+    if (!APP_PUBLIC_FILES.has(appPath)) {
+      return new Response("not found", { status: 404 });
+    }
     const ext = path.extname(filePath).toLowerCase();
     const mime = {
       ".html": "text/html",
@@ -976,9 +1288,13 @@ app.on("before-quit", () => {
     updateSession({ player: { zoomFactor: playerWindow.webContents.getZoomFactor() } });
     if (readSessionState().player.mode === "windowed") {
       updateSession({ player: { bounds: playerWindow.getBounds() } });
-    } else {
-      const b = playerWindow.getBounds();
-      updateSession({ player: { cluster: { x: b.x, y: b.y, width: b.width, height: b.height } } });
+    }
+  }
+  if (readSessionState().player.mode === "native") {
+    for (const [id, win] of nativeWindows) {
+      if (!win.isDestroyed()) {
+        updateSession({ panelsNative: { [id]: { open: true, bounds: win.getBounds() } } });
+      }
     }
   }
 });
